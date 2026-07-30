@@ -28,19 +28,18 @@ Gateway adapter владеет source I/O, monotonic clock, reconnect и shutdow
 | --- | --- |
 | Serial prefix | ASCII `!DOORS:` |
 | Door count | ровно 3 или 4, IDs `1..=count` |
-| Packet length | 28 bytes для 3 дверей, 35 bytes для 4 |
-| Door record | `<id>=<state>,<voltage_hi><voltage_lo>;`, ровно 7 bytes |
+| Packet length | 25 bytes для 3 дверей, 31 bytes для 4 |
+| Door record | `<id>=<state>,<voltage>;`, ровно 6 bytes |
 | State | raw byte `0` = closed, `1` = open |
-| Voltage | два raw big-endian bytes, `u16`, unit неизвестна |
+| Voltage | один raw byte, `u8`, unit неизвестна |
 | Aggregate topic | `doors.state` |
 | Per-door topic | `door.N.state` |
 | ZMQ wire form | одна UTF-8 frame: `<topic><space><compact JSON>` |
 | Default endpoint | `ipc:///run/doors.sock` |
 | Payload fields | `seq`, `ts`, `doors`, `any_open`, `all_closed`, `stale` |
 
-README Python с переменной ASCII voltage и примером с одним raw voltage byte не
-являются контрактом: действующий parser принимает только два byte. До появления
-документации контроллера Rust не будет поддерживать неоднозначные формы framing.
+Формат подтверждён captured live RS-232 packet 2026-07-30. Rust расширяет wire
+`u8` до output `u16`, чтобы сохранить числовой JSON schema consumers.
 
 ## Public library API
 
@@ -133,8 +132,8 @@ endpoint gateway.
 ```
 
 Он может отправлять любые bytes: partial prefix, packet по одному byte, garbage,
-`0x3B` внутри voltage, malformed candidate, несколько packet одним write и
-disconnect. `after_ms` измеряется от предыдущего event; сценарий не использует
+malformed candidate, несколько packet одним write и disconnect. `after_ms`
+измеряется от предыдущего event; сценарий не использует
 wall clock gateway и не меняет его FSM clock.
 
 Publisher **не вызывает** `DoorProtocol::parse_packet` или `StreamDecoder` и не
@@ -165,7 +164,7 @@ paths.
 Размер packet определяется конфигурацией до чтения:
 
 ```text
-7-byte prefix + door_count * 7-byte records
+7-byte prefix + door_count * 6-byte records
 ```
 
 Каждая запись разбирается строго по offsets, а не `split(';')`:
@@ -175,13 +174,11 @@ offset + 0: ASCII '1'..'4'
 offset + 1: '='
 offset + 2: state byte 0 or 1
 offset + 3: ','
-offset + 4: voltage high byte
-offset + 5: voltage low byte
-offset + 6: ';'
+offset + 4: voltage byte
+offset + 5: ';'
 ```
 
-Так voltage `0x3B` корректно принимается, в отличие от существующего Python
-delimiter parser. ID могут идти в packet в любом порядке, но каждое ожидаемое ID
+ID могут идти в packet в любом порядке, но каждое ожидаемое ID
 должно встретиться ровно один раз. Duplicate, missing/out-of-range ID, неверный
 separator/state/prefix/length завершаются `DoorProtocolError`; partial packet не
 считается invalid packet.

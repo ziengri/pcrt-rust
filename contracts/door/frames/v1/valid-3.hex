@@ -1,2 +1,2 @@
-# !DOORS:1=\x01,\x00*;2=\x00,\x00\x3b;3=\x01,\xff\xff;
-21444f4f52533a313d012c002a3b323d002c003b3b333d012cffff3b
+# Captured live RS-232 packet: !DOORS:1=\x00,\x00;2=\x01,\x0d;3=\x01,\x14;
+21444f4f52533a313d002c003b323d012c0d3b333d012c143b

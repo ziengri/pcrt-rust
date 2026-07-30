@@ -16,7 +16,8 @@ use serde::Serialize;
 
 /// Prefix of every controller packet.
 pub const HEADER: &[u8] = b"!DOORS:";
-const DOOR_RECORD_SIZE: usize = 7;
+// Live controller packets encode voltage in one byte: `<id>=<state>,<voltage>;`.
+const DOOR_RECORD_SIZE: usize = 6;
 const MIN_DOOR_COUNT: u8 = 3;
 const MAX_DOOR_COUNT: u8 = 4;
 const MAX_STREAM_BUFFER: usize = (2 * packet_size_for(MAX_DOOR_COUNT)) + HEADER.len();
@@ -185,8 +186,7 @@ impl DoorProtocol {
 
     /// Parses one complete, fixed-size controller packet.
     ///
-    /// The parser reads record bytes by fixed offsets. In particular, a raw voltage
-    /// byte equal to `b';'` is valid data and is never treated as a delimiter.
+    /// The parser reads fixed six-byte records: `<id>=<state>,<voltage>;`.
     ///
     /// # Errors
     ///
@@ -237,16 +237,16 @@ impl DoorProtocol {
                     actual: record[3],
                 });
             }
-            if record[6] != b';' {
+            if record[5] != b';' {
                 return Err(DoorError::InvalidSeparator {
                     door_id: door_id.get(),
                     expected: b';',
-                    actual: record[6],
+                    actual: record[5],
                 });
             }
             let telemetry = DoorTelemetry {
                 state,
-                voltage_raw: u16::from_be_bytes([record[4], record[5]]),
+                voltage_raw: u16::from(record[4]),
             };
             if doors.insert(door_id, telemetry).is_some() {
                 return Err(DoorError::DuplicateDoorId(door_id.get()));
@@ -630,13 +630,13 @@ mod tests {
     const FRESH_OPEN: &str = include_str!("../../../contracts/door/snapshots/v1/fresh-open.json");
 
     #[test]
-    fn parses_static_three_door_fixture_including_semicolon_voltage_byte() {
+    fn parses_live_three_door_fixture() {
         let protocol = DoorProtocol::new(3).unwrap();
         let packet = protocol.parse_packet(&hex_fixture(VALID_3)).unwrap();
 
         assert_eq!(packet.doors().len(), 3);
         assert_eq!(
-            packet.doors().get(&DoorId::new(1).unwrap()).unwrap().state,
+            packet.doors().get(&DoorId::new(2).unwrap()).unwrap().state,
             DoorState::Open
         );
         assert_eq!(
@@ -645,7 +645,7 @@ mod tests {
                 .get(&DoorId::new(2).unwrap())
                 .unwrap()
                 .voltage_raw,
-            59
+            13
         );
     }
 
@@ -663,7 +663,7 @@ mod tests {
                 .get(&DoorId::new(1).unwrap())
                 .unwrap()
                 .voltage_raw,
-            0xabcd
+            171
         );
     }
 

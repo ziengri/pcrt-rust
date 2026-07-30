@@ -8,7 +8,9 @@ under test.
 `snapshots/v1` contains one-frame ZeroMQ topic/payload compatibility fixtures. The
 transport sends each fixture as `<topic><space><compact JSON>`.
 
-`streams/v1` contains raw chunk scenarios for the test transport. They are consumed
+`frames/v1` and `streams/v1` use the live controller layout
+`!DOORS:<id>=<state>,<voltage_u8>;...`. `streams/v1` contains raw chunk scenarios
+for the test transport. They are consumed
 by `pcrt-door-protocol-publisher`; the publisher forwards bytes unchanged and does
 not invoke the parser.
 

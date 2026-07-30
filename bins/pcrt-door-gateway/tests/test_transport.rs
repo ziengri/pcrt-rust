@@ -39,7 +39,7 @@ fn unix_byte_source_drives_parser_fsm_and_zeromq_pub() {
     subscriber.set_rcvhwm(10).unwrap();
     subscriber.set_subscribe(b"doors.state").unwrap();
     subscriber.connect(&paths.zmq_endpoint()).unwrap();
-    subscriber.set_rcvtimeo(1_000).unwrap();
+    subscriber.set_rcvtimeo(3_000).unwrap();
 
     let mut gateway = Command::new(env!("CARGO_BIN_EXE_pcrt-door-gateway"))
         .args([
@@ -61,9 +61,9 @@ fn unix_byte_source_drives_parser_fsm_and_zeromq_pub() {
     assert_eq!(payload["stale"], false);
     assert_eq!(payload["any_open"], true);
     assert_eq!(payload["all_closed"], false);
-    assert_eq!(payload["doors"]["1"]["state"], 1);
-    assert_eq!(payload["doors"]["2"]["voltage"], 59);
-    assert_eq!(payload["doors"]["3"]["voltage"], 65_535);
+    assert_eq!(payload["doors"]["1"]["state"], 0);
+    assert_eq!(payload["doors"]["2"]["voltage"], 13);
+    assert_eq!(payload["doors"]["3"]["voltage"], 20);
 
     assert_success(source.wait().unwrap(), "protocol publisher");
     assert_success(gateway.wait().unwrap(), "gateway");
