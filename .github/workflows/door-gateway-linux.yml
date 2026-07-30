@@ -7,6 +7,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "bins/pcrt-door-gateway/**"
+      - "bins/pcrt-video-reencode/**"
       - "crates/pcrt-door/**"
       - "crates/pcrt-model/**"
       - ".github/workflows/door-gateway-linux.yml"
@@ -29,20 +30,21 @@ jobs:
       - name: Test gateway transport contract
         run: cargo test -p pcrt-door-gateway --features test-transport
 
-      - name: Build release gateway
-        run: cargo build --release -p pcrt-door-gateway --bin pcrt-door-gateway
+      - name: Build release binaries
+        run: cargo build --release -p pcrt-door-gateway --bin pcrt-door-gateway -p pcrt-video-reencode --bin pcrt-video-reencode
 
       - name: Collect deployable artifact
         run: |
           mkdir dist
           cp target/release/pcrt-door-gateway dist/
+          cp target/release/pcrt-video-reencode dist/
           sha256sum dist/pcrt-door-gateway > dist/SHA256SUMS
           ldd dist/pcrt-door-gateway > dist/LINKED_LIBRARIES.txt
 
       - name: Upload Linux release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcrt-door-gateway-linux-x86_64
+          name: pcrt-linux-x86_64
           path: dist/
           if-no-files-found: error
           retention-days: 30
