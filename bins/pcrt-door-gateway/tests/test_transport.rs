@@ -31,6 +31,16 @@ fn unix_byte_source_drives_parser_fsm_and_zeromq_pub() {
         .unwrap();
     wait_for_path(&paths.source);
 
+    // A ZeroMQ PUB drops messages before a subscriber handshake completes. Connect
+    // the subscriber before binding the gateway endpoint so the valid fixture frame
+    // cannot race the handshake on a busy CI runner.
+    let context = zmq::Context::new();
+    let subscriber = context.socket(zmq::SUB).unwrap();
+    subscriber.set_rcvhwm(10).unwrap();
+    subscriber.set_subscribe(b"doors.state").unwrap();
+    subscriber.connect(&paths.zmq_endpoint()).unwrap();
+    subscriber.set_rcvtimeo(1_000).unwrap();
+
     let mut gateway = Command::new(env!("CARGO_BIN_EXE_pcrt-door-gateway"))
         .args([
             "--test-byte-source-unix",
@@ -44,13 +54,6 @@ fn unix_byte_source_drives_parser_fsm_and_zeromq_pub() {
         ])
         .spawn()
         .unwrap();
-
-    let context = zmq::Context::new();
-    let subscriber = context.socket(zmq::SUB).unwrap();
-    subscriber.set_rcvhwm(10).unwrap();
-    subscriber.set_subscribe(b"doors.state").unwrap();
-    subscriber.connect(&paths.zmq_endpoint()).unwrap();
-    subscriber.set_rcvtimeo(1_000).unwrap();
 
     let (topic, payload) = receive_fresh_aggregate(&subscriber);
     assert_eq!(topic, "doors.state");
