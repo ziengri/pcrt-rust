@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcrt.local/contracts/api/timeline-v1.schema.json",
+  "title": "PCRT Timeline Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bus", "cam", "date", "in", "out"],
+  "properties": {
+    "bus": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cam": {
+      "type": "integer"
+    },
+    "date": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Current API format: DD.MM.YYYYTHH:MM"
+    },
+    "in": {
+      "type": "integer"
+    },
+    "out": {
+      "type": "integer"
+    }
+  }
+}

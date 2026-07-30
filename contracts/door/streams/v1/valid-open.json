@@ -1,0 +1,5 @@
+[
+  {"after_ms": 100, "bytes_hex": "21444f4f52533a313d012c002a3b"},
+  {"after_ms": 10, "bytes_hex": "323d002c003b3b333d012cffff3b"},
+  {"after_ms": 200, "disconnect": true}
+]

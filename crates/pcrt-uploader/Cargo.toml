@@ -1,0 +1,18 @@
+[package]
+name = "pcrt-uploader"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcrt-api-client = { path = "../pcrt-api-client" }
+pcrt-result-queue = { path = "../pcrt-result-queue" }
+pcrt-service = { path = "../pcrt-service" }
+
+[dev-dependencies]
+pcrt-model = { path = "../pcrt-model" }
+
+[lints]
+workspace = true

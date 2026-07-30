@@ -1,0 +1,48 @@
+name: Build Door Gateway Linux
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "bins/pcrt-door-gateway/**"
+      - "crates/pcrt-door/**"
+      - "crates/pcrt-model/**"
+      - ".github/workflows/door-gateway-linux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: x86_64 Linux release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native ZeroMQ development files
+        run: sudo apt-get update && sudo apt-get install --yes libzmq3-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test gateway transport contract
+        run: cargo test -p pcrt-door-gateway --features test-transport
+
+      - name: Build release gateway
+        run: cargo build --release -p pcrt-door-gateway --bin pcrt-door-gateway
+
+      - name: Collect deployable artifact
+        run: |
+          mkdir dist
+          cp target/release/pcrt-door-gateway dist/
+          sha256sum dist/pcrt-door-gateway > dist/SHA256SUMS
+          ldd dist/pcrt-door-gateway > dist/LINKED_LIBRARIES.txt
+
+      - name: Upload Linux release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcrt-door-gateway-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

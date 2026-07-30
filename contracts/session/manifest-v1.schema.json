@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcrt.local/contracts/session/manifest-v1.schema.json",
+  "title": "PCRT durable session manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "source_id",
+    "state",
+    "started_at_ms",
+    "finished_at_ms",
+    "videos",
+    "transitions",
+    "failure"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^cam-[^/\\\\\u0000]+-[0-9]+$"
+    },
+    "source_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "state": { "enum": ["capturing", "ready", "claimed", "failed"] },
+    "started_at_ms": { "type": "integer" },
+    "finished_at_ms": { "type": ["integer", "null"] },
+    "videos": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/video" }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/transition" }
+    },
+    "failure": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_id",
+        "path",
+        "codec",
+        "format",
+        "frame_count",
+        "width",
+        "height",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "camera_id": { "type": "string", "minLength": 1, "maxLength": 96 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!\\.?$)(?!.*[/\\\\])(?!manifest\\.json$).+$"
+        },
+        "codec": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "format": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "frame_count": { "type": "integer", "minimum": 1 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "at_ms", "reason"],
+      "properties": {
+        "state": { "enum": ["capturing", "ready", "claimed", "failed"] },
+        "at_ms": { "type": "integer" },
+        "reason": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

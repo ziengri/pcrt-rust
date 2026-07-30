@@ -1,0 +1,33 @@
+[package]
+name = "pcrt-door-gateway"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pcrt-door-gateway"
+path = "src/main.rs"
+
+[[bin]]
+name = "pcrt-door-protocol-publisher"
+path = "src/bin/protocol-publisher.rs"
+required-features = ["test-transport"]
+
+[features]
+test-transport = []
+
+[dependencies]
+pcrt-door = { path = "../../crates/pcrt-door" }
+pcrt-service = { path = "../../crates/pcrt-service" }
+ctrlc = "3.5.2"
+fs2 = "0.4.3"
+glob = "0.3.3"
+serialport = { version = "4.8.1", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+zmq = "0.10.0"
+
+[lints]
+workspace = true

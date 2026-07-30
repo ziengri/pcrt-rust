@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "session_id": "cam-1-1785340800000",
+  "source_id": "camera-1",
+  "state": "ready",
+  "started_at_ms": 1785340800000,
+  "finished_at_ms": 1785340830000,
+  "videos": [
+    {
+      "camera_id": "1",
+      "path": "camera-1.mkv",
+      "codec": "ffv1",
+      "format": "mkv",
+      "frame_count": 123,
+      "width": 256,
+      "height": 256,
+      "size_bytes": 123456,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    }
+  ],
+  "transitions": [
+    { "state": "capturing", "at_ms": 1785340800000, "reason": null },
+    { "state": "ready", "at_ms": 1785340830000, "reason": null }
+  ],
+  "failure": null
+}

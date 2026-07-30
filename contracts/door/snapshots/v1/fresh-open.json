@@ -1,0 +1,1 @@
+{"topic":"doors.state","payload":{"seq":1,"ts":1785340800.125,"doors":{"1":{"state":1,"voltage":42},"2":{"state":0,"voltage":59},"3":{"state":1,"voltage":65535}},"any_open":true,"all_closed":false,"stale":false}}
