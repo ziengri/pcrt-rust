@@ -9,6 +9,7 @@ members = [
     "crates/pcrt-storage",
     "crates/pcrt-uploader",
     "bins/pcrt-door-gateway",
+    "bins/pcrt-video-reencode",
 ]
 resolver = "3"
 

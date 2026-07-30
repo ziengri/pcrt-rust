@@ -28,6 +28,29 @@ cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```
 
+## Video encoding experiment
+
+`pcrt-video-reencode` sends decoded BGR frames through an `ffmpeg` rawvideo pipe
+and encodes them with the same FFV1/Matroska settings as the Python recorder:
+
+```bash
+cargo run -p pcrt-video-reencode --release -- \
+  --input /path/to/input.mp4 \
+  --output /tmp/reencoded.mkv \
+  --width 256 --height 256 --fps 25
+```
+
+It refuses to overwrite an existing output file.
+
+For H.264 with fast preset and CRF 18:
+
+```bash
+cargo run -p pcrt-video-reencode --release -- \
+  --input /path/to/input.mp4 \
+  --output /tmp/reencoded-h264.mkv \
+  --codec libx264 --preset fast --crf 18
+```
+
 ## Принципы
 
 - Внешние контракты версионируются до реализации сервиса.
