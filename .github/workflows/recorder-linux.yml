@@ -1,4 +1,4 @@
-name: Build Recorder Linux
+name: Build Recorder Debian Trixie
 
 on:
   workflow_dispatch:
@@ -18,13 +18,24 @@ permissions:
 
 jobs:
   build:
-    name: x86_64 Linux recorder
+    name: x86_64 Debian Trixie recorder
     runs-on: ubuntu-24.04
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v4
 
       - name: Install OpenCV build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes clang libclang-dev libopencv-dev pkg-config
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            clang \
+            curl \
+            git \
+            libclang-dev \
+            libopencv-dev \
+            pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -43,11 +54,17 @@ jobs:
           cp target/release/pcrt-recorder dist/
           sha256sum dist/pcrt-recorder > dist/SHA256SUMS
           ldd dist/pcrt-recorder > dist/LINKED_LIBRARIES.txt
+          cat /etc/os-release > dist/BUILD_OS_RELEASE.txt
+          printf '%s\n' \
+            ffmpeg \
+            libopencv-core410 \
+            libopencv-imgproc410 \
+            libopencv-videoio410 > dist/RUNTIME_DEPENDENCIES.txt
 
       - name: Upload Linux release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcrt-recorder-linux-x86_64
+          name: pcrt-recorder-debian-trixie-x86_64
           path: dist/
           if-no-files-found: error
           retention-days: 30
