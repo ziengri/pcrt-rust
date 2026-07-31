@@ -4,11 +4,13 @@ members = [
     "crates/pcrt-api-client",
     "crates/pcrt-door",
     "crates/pcrt-model",
+    "crates/pcrt-recording",
     "crates/pcrt-result-queue",
     "crates/pcrt-service",
     "crates/pcrt-storage",
     "crates/pcrt-uploader",
     "bins/pcrt-door-gateway",
+    "bins/pcrt-recorder",
 ]
 resolver = "3"
 

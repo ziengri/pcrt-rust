@@ -1,0 +1,53 @@
+name: Build Recorder Linux
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "bins/pcrt-recorder/**"
+      - "crates/pcrt-model/**"
+      - "crates/pcrt-recording/**"
+      - "crates/pcrt-service/**"
+      - "crates/pcrt-storage/**"
+      - ".github/workflows/recorder-linux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: x86_64 Linux recorder
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenCV build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes clang libclang-dev libopencv-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test recorder
+        run: cargo test -p pcrt-recorder --features opencv-source
+
+      - name: Lint native recorder
+        run: cargo clippy -p pcrt-recorder --all-targets --features opencv-source -- -D warnings
+
+      - name: Build release recorder
+        run: cargo build --release -p pcrt-recorder --features opencv-source
+
+      - name: Collect deployable artifact
+        run: |
+          mkdir dist
+          cp target/release/pcrt-recorder dist/
+          sha256sum dist/pcrt-recorder > dist/SHA256SUMS
+          ldd dist/pcrt-recorder > dist/LINKED_LIBRARIES.txt
+
+      - name: Upload Linux release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcrt-recorder-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
