@@ -35,6 +35,7 @@ struct GatewayConfig {
     serial_stop_bits: serialport::StopBits,
     serial_read_timeout: Duration,
     stale_timeout: Duration,
+    serial_liveness_timeout: Duration,
     heartbeat_interval: Duration,
     reconnect_delay: Duration,
     exit_after: Option<Duration>,
@@ -79,6 +80,7 @@ impl Publisher {
         let context = zmq::Context::new();
         let socket = context.socket(zmq::PUB).map_err(zmq_error)?;
         socket.set_sndhwm(10).map_err(zmq_error)?;
+        socket.set_linger(0).map_err(zmq_error)?;
         socket.bind(endpoint).map_err(zmq_error)?;
         log_event("publisher_bound", &[("endpoint", endpoint)]);
         Ok(Self {
@@ -139,6 +141,7 @@ struct GatewayHealth {
     overflow_events: u64,
     reconnect_attempts: u64,
     publish_failures: u64,
+    connected_at: Option<Instant>,
     last_valid_packet: Option<Instant>,
 }
 
@@ -171,6 +174,16 @@ impl GatewayHealth {
                 ("publish_failures", &self.publish_failures.to_string()),
             ],
         );
+    }
+
+    fn serial_liveness_expired(&self, now: Instant, timeout: Duration) -> bool {
+        let Some(connected_at) = self.connected_at else {
+            return false;
+        };
+        now.duration_since(connected_at) >= timeout
+            && self
+                .last_valid_packet
+                .is_none_or(|last_valid_packet| now.duration_since(last_valid_packet) >= timeout)
     }
 }
 
@@ -212,6 +225,8 @@ fn run() -> Result<(), String> {
             match open_source(&config) {
                 Ok(opened) => {
                     health.connected = true;
+                    health.connected_at = Some(now);
+                    health.last_valid_packet = None;
                     log_event("source_connected", &[]);
                     source = Some(opened);
                 }
@@ -232,6 +247,8 @@ fn run() -> Result<(), String> {
                     &mut source,
                     &mut health,
                     &mut next_connect_at,
+                    &mut decoder,
+                    protocol,
                     now,
                     &config,
                     "eof",
@@ -271,6 +288,8 @@ fn run() -> Result<(), String> {
                     &mut source,
                     &mut health,
                     &mut next_connect_at,
+                    &mut decoder,
+                    protocol,
                     now,
                     &config,
                     &error.to_string(),
@@ -278,6 +297,18 @@ fn run() -> Result<(), String> {
             }
         }
         let now = Instant::now();
+        if source.is_some() && health.serial_liveness_expired(now, config.serial_liveness_timeout) {
+            disconnect_source(
+                &mut source,
+                &mut health,
+                &mut next_connect_at,
+                &mut decoder,
+                protocol,
+                now,
+                &config,
+                "liveness_timeout",
+            );
+        }
         if let Some(snapshot) = machine.mark_stale_if_due(now) {
             publisher.publish(snapshot, &mut health);
             last_heartbeat = now;
@@ -294,18 +325,28 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // This transition updates all connection-owned state atomically.
 fn disconnect_source(
     source: &mut Option<ByteSource>,
     health: &mut GatewayHealth,
     next_connect_at: &mut Instant,
+    decoder: &mut StreamDecoder,
+    protocol: DoorProtocol,
     now: Instant,
     config: &GatewayConfig,
     reason: &str,
 ) {
     source.take();
+    reset_decoder(decoder, protocol);
     health.connected = false;
+    health.connected_at = None;
+    health.last_valid_packet = None;
     *next_connect_at = now + config.reconnect_delay;
     log_event("source_disconnected", &[("reason", reason)]);
+}
+
+fn reset_decoder(decoder: &mut StreamDecoder, protocol: DoorProtocol) {
+    *decoder = StreamDecoder::new(protocol);
 }
 
 fn open_source(config: &GatewayConfig) -> Result<ByteSource, String> {
@@ -439,6 +480,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<GatewayConf
     let mut gateway_path = "door_gateway.env".to_owned();
     let mut device_path = "/etc/pcrt/device.env".to_owned();
     let mut overrides = BTreeMap::new();
+    let mut exit_after = None;
     #[cfg(feature = "test-transport")]
     let mut test_source_path = None;
     while let Some(argument) = arguments.next() {
@@ -501,11 +543,15 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<GatewayConf
                 "RECONNECT_CLI_MS",
                 argument_value(&argument, &mut arguments)?,
             )?,
-            "--exit-after-ms" => set_override(
-                &mut overrides,
-                "EXIT_AFTER_MS",
-                argument_value(&argument, &mut arguments)?,
-            )?,
+            "--exit-after-ms" => {
+                if exit_after.is_some() {
+                    return Err("--exit-after-ms may be passed once".to_owned());
+                }
+                exit_after = Some(parse_duration_ms(
+                    &argument_value(&argument, &mut arguments)?,
+                    "--exit-after-ms",
+                )?);
+            }
             "--test-byte-source-unix" => {
                 #[cfg(feature = "test-transport")]
                 {
@@ -528,6 +574,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<GatewayConf
     let mut values = defaults();
     values.extend(read_env_file(&config_path)?);
     values.extend(read_env_file(&gateway_path)?);
+    if values.contains_key("EXIT_AFTER_MS") || env::var_os("EXIT_AFTER_MS").is_some() {
+        return Err("EXIT_AFTER_MS is only supported through --exit-after-ms".to_owned());
+    }
     let device_values = read_env_file(&device_path)?;
     if values.get("DOOR_COUNT").is_none_or(String::is_empty) {
         if let Some(count) = device_values.get("NUMBER_CAMS") {
@@ -568,6 +617,10 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<GatewayConf
     }
     let stale_timeout =
         duration_seconds_or_ms(&values, "STALE_TIMEOUT_SEC", "STALE_TIMEOUT_CLI_MS")?;
+    let serial_liveness_timeout = duration_seconds(&values, "SERIAL_LIVENESS_TIMEOUT_SEC")?;
+    if serial_liveness_timeout <= stale_timeout {
+        return Err("SERIAL_LIVENESS_TIMEOUT_SEC must exceed STALE_TIMEOUT_SEC".to_owned());
+    }
     let heartbeat_interval =
         duration_seconds_or_ms(&values, "HEARTBEAT_PUBLISH_SEC", "HEARTBEAT_CLI_MS")?;
     if heartbeat_interval >= stale_timeout {
@@ -592,9 +645,10 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<GatewayConf
         serial_stop_bits: parse_stop_bits(&required_value(&values, "SERIAL_STOPBITS")?)?,
         serial_read_timeout,
         stale_timeout,
+        serial_liveness_timeout,
         heartbeat_interval,
         reconnect_delay: duration_seconds_or_ms(&values, "RECONNECT_SEC", "RECONNECT_CLI_MS")?,
-        exit_after: optional_duration_ms(&values, "EXIT_AFTER_MS")?,
+        exit_after,
     })
 }
 
@@ -610,9 +664,9 @@ const fn config_environment_keys() -> &'static [&'static str] {
         "ZMQ_IPC_ENDPOINT",
         "DOOR_COUNT",
         "STALE_TIMEOUT_SEC",
+        "SERIAL_LIVENESS_TIMEOUT_SEC",
         "HEARTBEAT_PUBLISH_SEC",
         "RECONNECT_SEC",
-        "EXIT_AFTER_MS",
     ]
 }
 
@@ -633,6 +687,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("SERIAL_TIMEOUT", "0.2"),
         ("ZMQ_IPC_ENDPOINT", DEFAULT_ENDPOINT),
         ("STALE_TIMEOUT_SEC", "2"),
+        ("SERIAL_LIVENESS_TIMEOUT_SEC", "15"),
         ("HEARTBEAT_PUBLISH_SEC", "0.5"),
         ("RECONNECT_SEC", "1"),
     ]
@@ -719,20 +774,13 @@ fn duration_seconds_or_ms(
     duration_seconds(values, seconds_key)
 }
 
-fn optional_duration_ms(
-    values: &BTreeMap<String, String>,
-    key: &str,
-) -> Result<Option<Duration>, String> {
-    match non_empty(values, key) {
-        Some(value) => value
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .map(Duration::from_millis)
-            .map(Some)
-            .ok_or_else(|| format!("{key} must be a positive integer")),
-        None => Ok(None),
-    }
+fn parse_duration_ms(value: &str, key: &str) -> Result<Duration, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .ok_or_else(|| format!("{key} must be a positive integer"))
 }
 
 fn parse_data_bits(value: &str) -> Result<serialport::DataBits, String> {
@@ -772,7 +820,7 @@ fn argument_value(
 }
 
 const fn usage() -> &'static str {
-    "usage: pcrt-door-gateway (--serial-port PATH | --serial-port-find GLOB) [--config-env-file FILE] [--env-file FILE] [--device-env-file FILE] [--ipc-endpoint ENDPOINT] [--door-count 3|4]"
+    "usage: pcrt-door-gateway (--serial-port PATH | --serial-port-find GLOB) [--config-env-file FILE] [--env-file FILE] [--device-env-file FILE] [--ipc-endpoint ENDPOINT] [--door-count 3|4] [--exit-after-ms MS]"
 }
 
 fn zmq_error(error: zmq::Error) -> String {
@@ -794,10 +842,40 @@ mod tests {
         io::Write,
         os::unix::{fs::symlink, net::UnixListener},
         path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
-    use super::{parse_args, parse_parity, parse_stop_bits, prepare_ipc_endpoint};
+    use pcrt_door::{DecodeEvent, DoorProtocol, StreamDecoder};
+
+    use super::{
+        GatewayHealth, Publisher, parse_args, parse_parity, parse_stop_bits, prepare_ipc_endpoint,
+        reset_decoder,
+    };
+
+    #[test]
+    fn disconnect_drops_partial_serial_packet() {
+        let protocol = DoorProtocol::new(3).unwrap();
+        let mut decoder = StreamDecoder::new(protocol);
+        assert!(decoder.push(b"!DOORS:1=").is_empty());
+
+        reset_decoder(&mut decoder, protocol);
+
+        let events = decoder.push(b"1,0;2=0,0;3=0,0;");
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, DecodeEvent::Packet(_)))
+        );
+    }
+
+    #[test]
+    fn publisher_never_lingers_on_shutdown() {
+        let publisher =
+            Publisher::bind(&format!("inproc://pcrt-door-test-{}", std::process::id())).unwrap();
+
+        assert_eq!(publisher.socket.as_ref().unwrap().get_linger().unwrap(), 0);
+        publisher.close();
+    }
 
     #[test]
     fn production_config_requires_source_and_rejects_invalid_timing() {
@@ -811,6 +889,66 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn serial_liveness_must_follow_stale_timeout() {
+        let paths = ConfigTestPaths::new();
+        fs::write(
+            &paths.gateway,
+            "SERIAL_PORT=/dev/ttyS0\nSTALE_TIMEOUT_SEC=10\nSERIAL_LIVENESS_TIMEOUT_SEC=10\n",
+        )
+        .unwrap();
+
+        assert!(
+            parse_args([
+                "--env-file".to_owned(),
+                paths.gateway.to_string_lossy().into_owned(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn liveness_expires_without_a_valid_packet_or_after_silence() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(15);
+        let mut health = GatewayHealth {
+            connected_at: Some(now.checked_sub(timeout).unwrap()),
+            ..GatewayHealth::default()
+        };
+        assert!(health.serial_liveness_expired(now, timeout));
+
+        health.last_valid_packet = Some(now.checked_sub(Duration::from_secs(1)).unwrap());
+        assert!(!health.serial_liveness_expired(now, timeout));
+        health.last_valid_packet = Some(now.checked_sub(timeout).unwrap());
+        assert!(health.serial_liveness_expired(now, timeout));
+    }
+
+    #[test]
+    fn exit_after_is_rejected_in_env_file_but_allowed_on_cli() {
+        let paths = ConfigTestPaths::new();
+        fs::write(
+            &paths.gateway,
+            "SERIAL_PORT=/dev/ttyS0\nEXIT_AFTER_MS=100\n",
+        )
+        .unwrap();
+        assert!(
+            parse_args([
+                "--env-file".to_owned(),
+                paths.gateway.to_string_lossy().into_owned(),
+            ])
+            .is_err()
+        );
+
+        let config = parse_args([
+            "--serial-port".to_owned(),
+            "/dev/ttyS0".to_owned(),
+            "--exit-after-ms".to_owned(),
+            "100".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(config.exit_after, Some(Duration::from_millis(100)));
     }
 
     #[test]

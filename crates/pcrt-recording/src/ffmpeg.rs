@@ -268,8 +268,14 @@ impl FfmpegEncoder {
     /// Returns an error for a nonzero status, I/O failure or stop timeout.
     pub fn finish(mut self) -> Result<u64, FfmpegError> {
         self.stdin.take();
-        wait_for_exit(&mut self.child, self.config.stop_timeout)?;
-        Ok(self.frame_count)
+        match wait_for_exit(&mut self.child, self.config.stop_timeout) {
+            Ok(()) => Ok(self.frame_count),
+            Err(FfmpegError::ProcessFailed(status)) => Err(FfmpegError::ProcessFailed(status)),
+            Err(error) => {
+                terminate_and_reap(&mut self.child)?;
+                Err(error)
+            }
+        }
     }
 
     /// Closes input and ensures an incomplete capture process is stopped.
@@ -283,15 +289,26 @@ impl FfmpegEncoder {
     pub fn abort(mut self) -> Result<(), FfmpegError> {
         self.stdin.take();
         match wait_for_exit(&mut self.child, self.config.stop_timeout) {
-            Ok(()) => Ok(()),
-            Err(FfmpegError::StopTimedOut) => {
-                self.child.kill()?;
-                let _ = self.child.wait()?;
-                Ok(())
-            }
-            Err(error) => Err(error),
+            Ok(()) | Err(FfmpegError::ProcessFailed(_)) => Ok(()),
+            Err(_) => terminate_and_reap(&mut self.child),
         }
     }
+}
+
+impl Drop for FfmpegEncoder {
+    fn drop(&mut self) {
+        self.stdin.take();
+        let _ = terminate_and_reap(&mut self.child);
+    }
+}
+
+fn terminate_and_reap(child: &mut Child) -> Result<(), FfmpegError> {
+    match child.kill() {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+        Err(error) => return Err(FfmpegError::Io(error)),
+    }
+    child.wait().map(|_| ()).map_err(FfmpegError::Io)
 }
 
 fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), FfmpegError> {
@@ -312,9 +329,14 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), FfmpegError
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::{fs, path::PathBuf, time::Duration};
 
-    use super::{FfmpegConfig, FfmpegError, VIDEO_CODEC, X264_CRF, X264_PRESET};
+    #[cfg(unix)]
+    use std::{os::unix::fs::PermissionsExt, process::Command, thread, time::Instant};
+
+    use tempfile::tempdir;
+
+    use super::{FfmpegConfig, FfmpegEncoder, FfmpegError, VIDEO_CODEC, X264_CRF, X264_PRESET};
     use crate::lifecycle::VIDEO_FORMAT;
 
     #[test]
@@ -387,5 +409,58 @@ mod tests {
             ),
             Err(FfmpegError::ZeroStopTimeout)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_timeout_kills_and_reaps_child() {
+        let directory = tempdir().unwrap();
+        let program = directory.path().join("never-exits.sh");
+        let pid_file = directory.path().join("child.pid");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$$\" > \"{}\"\nwhile :; do :; done\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = FfmpegConfig::with_program_and_timeout(
+            &program,
+            directory.path().join("out.mkv"),
+            1,
+            1,
+            25,
+            Duration::from_millis(20),
+        )
+        .unwrap();
+        let encoder = FfmpegEncoder::start(config).unwrap();
+        let pid = wait_for_file(&pid_file);
+        let started_at = Instant::now();
+
+        let error = encoder.finish().unwrap_err();
+
+        assert!(matches!(error, FfmpegError::StopTimedOut));
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        assert!(
+            !Command::new("kill")
+                .args(["-0", &pid])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    #[cfg(unix)]
+    fn wait_for_file(path: &std::path::Path) -> String {
+        for _ in 0..100 {
+            if let Ok(pid) = fs::read_to_string(path) {
+                return pid;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {}", path.display());
     }
 }

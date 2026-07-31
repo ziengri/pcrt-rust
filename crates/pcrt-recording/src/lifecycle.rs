@@ -27,6 +27,9 @@ impl RecordingLimits {
         if max_frames == 0 {
             return Err(RecordingError::ZeroFrameLimit);
         }
+        if max_frames == u64::MAX {
+            return Err(RecordingError::FrameLimitTooLarge);
+        }
         Ok(Self {
             frames_per_second,
             max_frames,
@@ -47,6 +50,8 @@ pub enum RecordingError {
     ZeroFrameRate,
     /// A recording must allow at least one frame.
     ZeroFrameLimit,
+    /// The inclusive over-limit frame cannot be represented.
+    FrameLimitTooLarge,
 }
 
 impl std::fmt::Display for RecordingError {
@@ -54,6 +59,9 @@ impl std::fmt::Display for RecordingError {
         match self {
             Self::ZeroFrameRate => formatter.write_str("recording frame rate must be positive"),
             Self::ZeroFrameLimit => formatter.write_str("recording frame limit must be positive"),
+            Self::FrameLimitTooLarge => {
+                formatter.write_str("recording frame limit must leave room for over-limit discard")
+            }
         }
     }
 }
@@ -111,20 +119,16 @@ impl RecordingLifecycle {
     ///
     /// A close or stale state finalizes an active capture and re-enables recording
     /// after an earlier over-limit discard.
-    pub fn on_door_state(&mut self, door_open: bool) -> Option<RecordingAction> {
+    #[must_use]
+    pub fn plan_door_state(&self, door_open: bool) -> Option<RecordingAction> {
         if door_open {
             return None;
         }
         match self.state {
             RecordingState::Capturing { frame_count } => {
-                self.state = RecordingState::Idle;
                 Some(RecordingAction::FinalizeCapture { frame_count })
             }
-            RecordingState::DiscardedUntilDoorClosed => {
-                self.state = RecordingState::Idle;
-                None
-            }
-            RecordingState::Idle => None,
+            RecordingState::DiscardedUntilDoorClosed | RecordingState::Idle => None,
         }
     }
 
@@ -133,46 +137,65 @@ impl RecordingLifecycle {
     /// Python compatibility intentionally checks the cap after the frame write, so
     /// `max_frames + 1` is written then discarded and recording is suppressed until
     /// the door becomes closed or stale.
-    pub fn on_frame(&mut self, door_open: bool) -> Vec<RecordingAction> {
+    #[must_use]
+    pub fn plan_frame(&self, door_open: bool) -> Vec<RecordingAction> {
         if !door_open || matches!(self.state, RecordingState::DiscardedUntilDoorClosed) {
             return Vec::new();
         }
         if matches!(self.state, RecordingState::Idle) {
-            self.state = RecordingState::Capturing { frame_count: 0 };
-            let mut actions = vec![RecordingAction::StartCapture];
-            actions.extend(self.record_frame());
-            return actions;
+            return vec![RecordingAction::StartCapture, RecordingAction::WriteFrame];
         }
-        self.record_frame()
+        let RecordingState::Capturing { frame_count } = self.state else {
+            unreachable!("discarded state was handled above");
+        };
+        if frame_count == self.limits.max_frames() {
+            vec![
+                RecordingAction::WriteFrame,
+                RecordingAction::DiscardCapture {
+                    frame_count: frame_count + 1,
+                },
+            ]
+        } else {
+            vec![RecordingAction::WriteFrame]
+        }
     }
 
     /// Requests a controlled shutdown. An active capture is finalized; a previously
     /// discarded capture has already been closed and needs no action.
-    pub fn shutdown(&mut self) -> Option<RecordingAction> {
-        let action = match self.state {
+    #[must_use]
+    pub fn plan_shutdown(&self) -> Option<RecordingAction> {
+        match self.state {
             RecordingState::Capturing { frame_count } => {
                 Some(RecordingAction::FinalizeCapture { frame_count })
             }
             RecordingState::Idle | RecordingState::DiscardedUntilDoorClosed => None,
-        };
-        self.state = RecordingState::Idle;
-        action
+        }
     }
 
-    fn record_frame(&mut self) -> Vec<RecordingAction> {
-        let RecordingState::Capturing { frame_count } = self.state else {
-            unreachable!("frames are recorded only while capturing");
+    /// Commits an action only after its side effect completed successfully.
+    pub fn complete(&mut self, action: RecordingAction) {
+        self.state = match action {
+            RecordingAction::StartCapture => RecordingState::Capturing { frame_count: 0 },
+            RecordingAction::WriteFrame => match self.state {
+                RecordingState::Capturing { frame_count } => RecordingState::Capturing {
+                    frame_count: frame_count + 1,
+                },
+                _ => unreachable!("write completion requires an active capture"),
+            },
+            RecordingAction::FinalizeCapture { .. } => RecordingState::Idle,
+            RecordingAction::DiscardCapture { .. } => RecordingState::DiscardedUntilDoorClosed,
         };
-        let frame_count = frame_count.saturating_add(1);
-        if frame_count > self.limits.max_frames() {
-            self.state = RecordingState::DiscardedUntilDoorClosed;
-            vec![
-                RecordingAction::WriteFrame,
-                RecordingAction::DiscardCapture { frame_count },
-            ]
-        } else {
-            self.state = RecordingState::Capturing { frame_count };
-            vec![RecordingAction::WriteFrame]
+    }
+
+    /// Prevents further recording until the door is observed closed after a failed effect.
+    pub fn abandon(&mut self) {
+        self.state = RecordingState::DiscardedUntilDoorClosed;
+    }
+
+    /// Re-enables recording only after an observed closed or stale door state.
+    pub fn acknowledge_closed_door(&mut self, door_open: bool) {
+        if !door_open && matches!(self.state, RecordingState::DiscardedUntilDoorClosed) {
+            self.state = RecordingState::Idle;
         }
     }
 }
@@ -188,6 +211,12 @@ mod tests {
         RecordingLifecycle::new(RecordingLimits::new(25, 2).unwrap())
     }
 
+    fn complete(lifecycle: &mut RecordingLifecycle, actions: Vec<RecordingAction>) {
+        for action in actions {
+            lifecycle.complete(action);
+        }
+    }
+
     #[test]
     fn h264_profile_is_fixed_for_the_migration() {
         assert_eq!(VIDEO_CODEC, "libx264");
@@ -201,22 +230,31 @@ mod tests {
         let mut lifecycle = lifecycle();
 
         assert_eq!(
-            lifecycle.on_frame(true),
+            lifecycle.plan_frame(true),
             vec![RecordingAction::StartCapture, RecordingAction::WriteFrame]
         );
-        assert_eq!(lifecycle.on_frame(true), vec![RecordingAction::WriteFrame]);
+        complete(
+            &mut lifecycle,
+            vec![RecordingAction::StartCapture, RecordingAction::WriteFrame],
+        );
         assert_eq!(
-            lifecycle.on_door_state(false),
+            lifecycle.plan_frame(true),
+            vec![RecordingAction::WriteFrame]
+        );
+        complete(&mut lifecycle, vec![RecordingAction::WriteFrame]);
+        assert_eq!(
+            lifecycle.plan_door_state(false),
             Some(RecordingAction::FinalizeCapture { frame_count: 2 })
         );
+        lifecycle.complete(RecordingAction::FinalizeCapture { frame_count: 2 });
         assert_eq!(lifecycle.state(), RecordingState::Idle);
     }
 
     #[test]
     fn closed_or_stale_state_never_starts_a_capture() {
-        let mut lifecycle = lifecycle();
+        let lifecycle = lifecycle();
 
-        assert!(lifecycle.on_frame(false).is_empty());
+        assert!(lifecycle.plan_frame(false).is_empty());
         assert_eq!(lifecycle.state(), RecordingState::Idle);
     }
 
@@ -225,11 +263,18 @@ mod tests {
         let mut lifecycle = lifecycle();
 
         assert_eq!(
-            lifecycle.on_frame(true),
+            lifecycle.plan_frame(true),
             vec![RecordingAction::StartCapture, RecordingAction::WriteFrame]
         );
-        assert_eq!(lifecycle.on_door_state(true), None);
-        assert_eq!(lifecycle.on_frame(true), vec![RecordingAction::WriteFrame]);
+        complete(
+            &mut lifecycle,
+            vec![RecordingAction::StartCapture, RecordingAction::WriteFrame],
+        );
+        assert_eq!(lifecycle.plan_door_state(true), None);
+        assert_eq!(
+            lifecycle.plan_frame(true),
+            vec![RecordingAction::WriteFrame]
+        );
     }
 
     #[test]
@@ -237,32 +282,45 @@ mod tests {
         let mut lifecycle = lifecycle();
 
         assert_eq!(
-            lifecycle.on_frame(true),
+            lifecycle.plan_frame(true),
             vec![RecordingAction::StartCapture, RecordingAction::WriteFrame]
         );
-        assert_eq!(lifecycle.on_frame(true), vec![RecordingAction::WriteFrame]);
+        complete(
+            &mut lifecycle,
+            vec![RecordingAction::StartCapture, RecordingAction::WriteFrame],
+        );
         assert_eq!(
-            lifecycle.on_frame(true),
+            lifecycle.plan_frame(true),
+            vec![RecordingAction::WriteFrame]
+        );
+        complete(&mut lifecycle, vec![RecordingAction::WriteFrame]);
+        assert_eq!(
+            lifecycle.plan_frame(true),
             vec![
                 RecordingAction::WriteFrame,
                 RecordingAction::DiscardCapture { frame_count: 3 }
             ]
         );
+        lifecycle.complete(RecordingAction::WriteFrame);
+        lifecycle.complete(RecordingAction::DiscardCapture { frame_count: 3 });
         assert_eq!(lifecycle.state(), RecordingState::DiscardedUntilDoorClosed);
-        assert!(lifecycle.on_frame(true).is_empty());
-        assert_eq!(lifecycle.on_door_state(false), None);
+        assert!(lifecycle.plan_frame(true).is_empty());
+        assert_eq!(lifecycle.plan_door_state(false), None);
+        lifecycle.acknowledge_closed_door(false);
         assert_eq!(lifecycle.state(), RecordingState::Idle);
     }
 
     #[test]
     fn shutdown_finalizes_active_capture() {
         let mut lifecycle = lifecycle();
-        let _ = lifecycle.on_frame(true);
+        let actions = lifecycle.plan_frame(true);
+        complete(&mut lifecycle, actions);
 
         assert_eq!(
-            lifecycle.shutdown(),
+            lifecycle.plan_shutdown(),
             Some(RecordingAction::FinalizeCapture { frame_count: 1 })
         );
+        lifecycle.complete(RecordingAction::FinalizeCapture { frame_count: 1 });
         assert_eq!(lifecycle.state(), RecordingState::Idle);
     }
 
@@ -275,6 +333,10 @@ mod tests {
         assert_eq!(
             RecordingLimits::new(25, 0),
             Err(RecordingError::ZeroFrameLimit)
+        );
+        assert_eq!(
+            RecordingLimits::new(25, u64::MAX),
+            Err(RecordingError::FrameLimitTooLarge)
         );
     }
 }

@@ -1,12 +1,15 @@
 //! OpenCV-backed video source for camera indexes, local files and RTSP URLs.
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use opencv::{
-    core::Mat,
+    core::{Mat, Vector},
     prelude::{MatTraitConst, VideoCaptureTrait, VideoCaptureTraitConst},
     videoio,
 };
+
+/// Bounded `FFmpeg` backend wait for opening or reading a network camera.
+pub const NETWORK_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Errors returned while opening, reading or resetting a video source.
 #[derive(Debug)]
@@ -147,7 +150,20 @@ impl Drop for OpenCvVideoSource {
 fn open_capture(source: &str) -> Result<videoio::VideoCapture, VideoSourceError> {
     let capture = match source.parse::<i32>() {
         Ok(index) => videoio::VideoCapture::new(index, videoio::CAP_ANY)?,
-        Err(_) => videoio::VideoCapture::from_file(source, videoio::CAP_ANY)?,
+        Err(_) if Path::new(source).is_file() => {
+            videoio::VideoCapture::from_file(source, videoio::CAP_ANY)?
+        }
+        Err(_) => {
+            let timeout_ms = i32::try_from(NETWORK_READ_TIMEOUT.as_millis())
+                .map_err(|_| VideoSourceError::OpenFailed(source.to_owned()))?;
+            let params = Vector::from_iter([
+                videoio::CAP_PROP_OPEN_TIMEOUT_MSEC,
+                timeout_ms,
+                videoio::CAP_PROP_READ_TIMEOUT_MSEC,
+                timeout_ms,
+            ]);
+            videoio::VideoCapture::from_file_with_params(source, videoio::CAP_FFMPEG, &params)?
+        }
     };
     if !capture.is_opened()? {
         return Err(VideoSourceError::OpenFailed(source.to_owned()));

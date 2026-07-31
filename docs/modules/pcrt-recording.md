@@ -29,17 +29,19 @@ Idle
 Capturing
   -- closed or stale --> Finalizing --> Idle
   -- duration limit --> DiscardedUntilClosed
-  -- source or encoder failure --> Failed
+  -- encoder/storage failure --> DiscardedUntilClosed
 DiscardedUntilClosed
   -- closed or stale --> Idle
-Failed
-  -- process exits; storage recovery classifies unfinished capture
 ```
 
 Repeated open messages do not create another writer. A writer is created only after
 both open state and a valid frame are available. The duration cap remains frame based
 for compatibility: a frame that makes `frame_count > MAX_SESSION_SECONDS * FPS`
 causes that capture to be discarded and blocks a new capture until the door closes.
+The normal duration-limit discard closes ffmpeg and removes its `capturing` directory
+immediately, so it cannot consume storage until the next recovery. Encoder and storage
+failures suppress new writes until a closed/stale door state; their incomplete capture
+is retained for durable recovery diagnostics.
 
 On clean `SIGTERM`/`SIGINT`, the binary stops source reads, closes encoder input and
 attempts bounded finalization of an active capture. It never emits a synthetic door
@@ -48,7 +50,9 @@ state. Encoder failure never publishes a ready session.
 ## Video encoder
 
 `OpenCvVideoSource` uses `VideoCapture` for numeric cameras, local files and RTSP
-URLs. `RecordingService` owns normalized door state and reads one frame each iteration,
+URLs. Network URLs use the OpenCV FFmpeg backend with a two-second open/read timeout,
+so a stalled RTSP read cannot block service shutdown indefinitely. `RecordingService`
+owns normalized door state and reads one frame each iteration,
 requires `CV_8UC3` BGR input,
 and, only while the door is open, resizes with `INTER_LINEAR` to configured `WIDTH x
 HEIGHT`, then supplies exact `bgr24` raw bytes to `ffmpeg`. Closed/stale door state
@@ -64,8 +68,8 @@ ffmpeg -hide_banner -loglevel error -y \
 
 `libx264`, `fast` and CRF `18` are intentional migration changes from Python
 `ffv1`. Published storage metadata records `codec: "libx264"` and `format: "mkv"`.
-The adapter uses bounded close and child-kill steps so systemd shutdown cannot wait
-indefinitely. Process-group termination remains a future hardening step.
+The adapter uses bounded close and child-kill/reap steps so systemd shutdown cannot
+leave an ffmpeg child behind. Process-group termination remains a future hardening step.
 
 ## Storage
 

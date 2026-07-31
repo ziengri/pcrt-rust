@@ -356,6 +356,25 @@ impl SessionStorage {
         })
     }
 
+    /// Permanently removes an intentionally discarded in-progress capture.
+    ///
+    /// The opaque [`CaptureSession`] handle is validated before removal, so this
+    /// operation cannot delete a session from another storage state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capture handle is stale or filesystem cleanup fails.
+    pub fn discard_capture(&self, capture: &CaptureSession) -> Result<(), StorageError> {
+        self.ensure_handle_path(
+            StorageState::Capturing,
+            &capture.session_id,
+            &capture.directory,
+        )?;
+        fs::remove_dir_all(&capture.directory)
+            .map_err(|error| StorageError::io("remove discarded capture", error))?;
+        sync_directory(&self.state_directory(StorageState::Capturing))
+    }
+
     /// Atomically забирает самую старую проверенную ready-сессию.
     ///
     /// Повреждённые ready-сессии переносятся в `failed`; корректные сортируются
@@ -1707,6 +1726,23 @@ mod tests {
             fs::read(root.join("failed/session-1/camera-1.mkv")).unwrap(),
             b"partial"
         );
+        remove_root(&root);
+    }
+
+    #[test]
+    fn discarded_capture_is_removed_immediately() {
+        let root = test_root();
+        let storage = SessionStorage::open(&root).unwrap();
+        let id = SessionId::new("session-1").unwrap();
+        let capture = storage
+            .begin_capture(&id, CaptureMetadata::new("camera-1", 100))
+            .unwrap();
+        fs::write(capture.video_path("camera-1.mkv").unwrap(), b"discarded").unwrap();
+
+        storage.discard_capture(&capture).unwrap();
+
+        assert!(!root.join("capturing/session-1.tmp").exists());
+        assert_eq!(storage.recover(200).unwrap().failed_sessions, 0);
         remove_root(&root);
     }
 

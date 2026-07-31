@@ -173,8 +173,10 @@ impl<F: EncoderFactory> Recorder<F> {
     ///
     /// Returns an error if finalization cannot complete and publish durably.
     pub fn on_door_state(&mut self, door_open: bool, now_ms: i64) -> Result<(), RecorderError> {
-        if let Some(action) = self.lifecycle.on_door_state(door_open) {
-            self.execute(action, None, now_ms)?;
+        if let Some(action) = self.lifecycle.plan_door_state(door_open) {
+            self.execute_and_complete(action, None, now_ms)?;
+        } else {
+            self.lifecycle.acknowledge_closed_door(door_open);
         }
         Ok(())
     }
@@ -190,8 +192,8 @@ impl<F: EncoderFactory> Recorder<F> {
         frame: &[u8],
         now_ms: i64,
     ) -> Result<(), RecorderError> {
-        for action in self.lifecycle.on_frame(door_open) {
-            self.execute(action, Some(frame), now_ms)?;
+        for action in self.lifecycle.plan_frame(door_open) {
+            self.execute_and_complete(action, Some(frame), now_ms)?;
         }
         Ok(())
     }
@@ -202,26 +204,33 @@ impl<F: EncoderFactory> Recorder<F> {
     ///
     /// Returns an error if the encoder or durable publication fails.
     pub fn shutdown(&mut self, now_ms: i64) -> Result<(), RecorderError> {
-        if let Some(action) = self.lifecycle.shutdown() {
-            self.execute(action, None, now_ms)?;
+        if let Some(action) = self.lifecycle.plan_shutdown() {
+            self.execute_and_complete(action, None, now_ms)?;
         }
         Ok(())
     }
 
-    fn execute(
+    fn execute_and_complete(
         &mut self,
         action: RecordingAction,
         frame: Option<&[u8]>,
         now_ms: i64,
     ) -> Result<(), RecorderError> {
-        match action {
+        let result = match action {
             RecordingAction::StartCapture => self.start_capture(now_ms),
             RecordingAction::WriteFrame => self.write_frame(frame),
             RecordingAction::FinalizeCapture { frame_count } => {
                 self.finalize_capture(frame_count, now_ms)
             }
             RecordingAction::DiscardCapture { .. } => self.discard_capture(),
+        };
+        if result.is_ok() {
+            self.lifecycle.complete(action);
+        } else {
+            self.lifecycle.abandon();
+            self.abort_active();
         }
+        result
     }
 
     fn start_capture(&mut self, now_ms: i64) -> Result<(), RecorderError> {
@@ -236,15 +245,18 @@ impl<F: EncoderFactory> Recorder<F> {
             CaptureMetadata::new(&self.config.source_id, now_ms),
         )?;
         let output = capture.video_path(&format!("{}.{}", self.config.camera_id, VIDEO_FORMAT))?;
-        let encoder = self
-            .encoder_factory
-            .start(
-                &output,
-                self.config.width,
-                self.config.height,
-                self.config.frames_per_second,
-            )
-            .map_err(RecorderError::Encoder)?;
+        let encoder = match self.encoder_factory.start(
+            &output,
+            self.config.width,
+            self.config.height,
+            self.config.frames_per_second,
+        ) {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                self.storage.discard_capture(&capture)?;
+                return Err(RecorderError::Encoder(error));
+            }
+        };
         self.active = Some(ActiveCapture { capture, encoder });
         Ok(())
     }
@@ -290,7 +302,15 @@ impl<F: EncoderFactory> Recorder<F> {
         let active = self.active.take().ok_or(RecorderError::Invariant(
             "discard action has no active capture",
         ))?;
-        active.encoder.abort().map_err(RecorderError::Encoder)
+        active.encoder.abort().map_err(RecorderError::Encoder)?;
+        self.storage.discard_capture(&active.capture)?;
+        Ok(())
+    }
+
+    fn abort_active(&mut self) {
+        if let Some(active) = self.active.take() {
+            let _ = active.encoder.abort();
+        }
     }
 }
 
@@ -319,6 +339,8 @@ mod tests {
     struct FakeState {
         started_outputs: Vec<PathBuf>,
         frames: Vec<Vec<u8>>,
+        start_error: bool,
+        write_error: bool,
         finish_error: bool,
         aborted: usize,
     }
@@ -331,10 +353,11 @@ mod tests {
             _height: u32,
             _frames_per_second: u32,
         ) -> Result<Box<dyn FrameEncoder>, String> {
-            self.state
-                .borrow_mut()
-                .started_outputs
-                .push(output.to_owned());
+            let mut state = self.state.borrow_mut();
+            state.started_outputs.push(output.to_owned());
+            if state.start_error {
+                return Err("encoder start failed".to_owned());
+            }
             Ok(Box::new(FakeEncoder {
                 state: Rc::clone(&self.state),
                 frame_count: 0,
@@ -349,7 +372,11 @@ mod tests {
 
     impl FrameEncoder for FakeEncoder {
         fn write_frame(&mut self, frame: &[u8]) -> Result<(), String> {
-            self.state.borrow_mut().frames.push(frame.to_vec());
+            let mut state = self.state.borrow_mut();
+            if state.write_error {
+                return Err("encoder write failed".to_owned());
+            }
+            state.frames.push(frame.to_vec());
             self.frame_count += 1;
             Ok(())
         }
@@ -429,7 +456,15 @@ mod tests {
         let storage = SessionStorage::open(directory.path()).unwrap();
         assert!(storage.claim_next_ready(103).unwrap().is_none());
         let report = storage.recover(104).unwrap();
-        assert_eq!(report.failed_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert!(
+            !directory
+                .path()
+                .join("capturing")
+                .read_dir()
+                .unwrap()
+                .any(|entry| entry.is_ok())
+        );
     }
 
     #[test]
@@ -448,6 +483,43 @@ mod tests {
         let storage = SessionStorage::open(directory.path()).unwrap();
         assert!(storage.claim_next_ready(102).unwrap().is_none());
         assert_eq!(storage.recover(103).unwrap().failed_sessions, 1);
+    }
+
+    #[test]
+    fn failed_encoder_start_waits_for_a_closed_door_before_retrying() {
+        let factory = FakeFactory::default();
+        let state = Rc::clone(&factory.state);
+        state.borrow_mut().start_error = true;
+        let (_directory, mut recorder) = recorder(factory, 10);
+
+        assert!(matches!(
+            recorder.on_frame(true, &[5_u8; 6], 100),
+            Err(RecorderError::Encoder(_))
+        ));
+        state.borrow_mut().start_error = false;
+        recorder.on_frame(true, &[5_u8; 6], 101).unwrap();
+        assert_eq!(state.borrow().started_outputs.len(), 1);
+
+        recorder.on_door_state(false, 102).unwrap();
+        recorder.on_frame(true, &[5_u8; 6], 103).unwrap();
+        assert_eq!(state.borrow().started_outputs.len(), 2);
+    }
+
+    #[test]
+    fn failed_frame_write_aborts_and_does_not_issue_follow_up_writes() {
+        let factory = FakeFactory::default();
+        let state = Rc::clone(&factory.state);
+        state.borrow_mut().write_error = true;
+        let (_directory, mut recorder) = recorder(factory, 10);
+
+        assert!(matches!(
+            recorder.on_frame(true, &[6_u8; 6], 100),
+            Err(RecorderError::Encoder(_))
+        ));
+        assert_eq!(state.borrow().aborted, 1);
+        state.borrow_mut().write_error = false;
+        recorder.on_frame(true, &[6_u8; 6], 101).unwrap();
+        assert!(state.borrow().frames.is_empty());
     }
 
     #[test]
