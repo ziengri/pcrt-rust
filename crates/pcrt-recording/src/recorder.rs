@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(state.borrow().aborted, 1);
         let storage = SessionStorage::open(directory.path()).unwrap();
         assert!(storage.claim_next_ready(103).unwrap().is_none());
-        let report = storage.recover(104).unwrap();
+        let report = storage.recover_recording("cam1", 104).unwrap();
         assert_eq!(report.failed_sessions, 0);
         assert!(
             !directory
@@ -482,7 +482,13 @@ mod tests {
 
         let storage = SessionStorage::open(directory.path()).unwrap();
         assert!(storage.claim_next_ready(102).unwrap().is_none());
-        assert_eq!(storage.recover(103).unwrap().failed_sessions, 1);
+        assert_eq!(
+            storage
+                .recover_recording("cam1", 103)
+                .unwrap()
+                .failed_sessions,
+            1
+        );
     }
 
     #[test]

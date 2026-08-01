@@ -76,15 +76,20 @@ Storage не знает SQLite и не может сам выполнять эт
 
 ## Recovery
 
-`recover` предназначен для старта до запуска recorder/processor:
+Recovery разделён по владельцам, чтобы независимый restart сервиса не затронул
+активную работу другого процесса:
 
-- recovery marker от atomic write или claim удаляется;
-- `capturing` без final manifest переносится в `failed`, видео сохраняются;
-- finalised capture, оставшийся до directory rename, публикуется в `ready`;
-- ready с неверным manifest, лишним файлом, symlink, размером или SHA-256
-  переносится в `failed`;
-- корректный stale `claimed` возвращается в `ready`;
-- повреждённый `claimed` переносится в `failed`.
+- `recover_recording(camera_id, now)` трогает только canonical `capturing`
+  указанной камеры; он не изменяет `ready` или `claimed`;
+- processor сначала получает `prepared_session_ids` из queue и вызывает
+  `delete_session_with_prepared_result` для каждого результата;
+- затем `recover_processing(now)` валидирует `ready`, возвращает abandoned
+  `claimed` в `ready` и переносит повреждённые sessions в `failed`;
+- `recover_processing` никогда не изменяет `capturing`.
+
+Если prepared result уже durable, отсутствие claimed-directory является
+нормальным idempotent состоянием после delete. Наличие того же `session_id` в
+`capturing`, `ready` или `failed` является consistency error и не удаляется.
 
 Storage не выполняет destructive startup cleanup. Retention и disk budget будут
 отдельной политикой только для terminal videos.
@@ -112,5 +117,5 @@ Storage не выполняет destructive startup cleanup. Retention и disk b
 ## Тесты
 
 Тесты проверяют atomic publish, SHA-256, oldest-first, конкурентный claim,
-recovery abandoned claim, сохранение повреждённых videos в `failed`,
-interrupted capture и path traversal из manifest.
+role-scoped recovery, prepared-result reconciliation, сохранение повреждённых
+videos в `failed`, interrupted capture и path traversal из manifest.

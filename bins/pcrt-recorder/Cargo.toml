@@ -16,12 +16,10 @@ required-features = ["opencv-source"]
 
 [dependencies]
 pcrt-recording = { path = "../../crates/pcrt-recording" }
+pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-storage = { path = "../../crates/pcrt-storage" }
 ctrlc = "3.5.2"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-zmq = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3"

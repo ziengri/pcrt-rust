@@ -1,0 +1,19 @@
+[package]
+name = "pcrt-processing"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcrt-model = { path = "../pcrt-model" }
+pcrt-result-queue = { path = "../pcrt-result-queue" }
+pcrt-service = { path = "../pcrt-service" }
+pcrt-storage = { path = "../pcrt-storage" }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints]
+workspace = true

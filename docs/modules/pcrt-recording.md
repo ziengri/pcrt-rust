@@ -73,7 +73,9 @@ leave an ffmpeg child behind. Process-group termination remains a future hardeni
 
 ## Storage
 
-At startup the binary calls `SessionStorage::recover()` before opening camera input.
+At startup the binary calls camera-scoped `SessionStorage::recover_recording()`
+before opening camera input. It never modifies processor-owned `ready` or `claimed`
+sessions.
 For every capture it writes only under the `CaptureSession` directory and finalizes
 through `SessionStorage::finalize_capture`. Storage hashes and fsyncs the video,
 writes the manifest, then atomically publishes the whole session directory to

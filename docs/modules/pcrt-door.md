@@ -7,18 +7,21 @@
 контроллере. Python остаётся production-владельцем `/run/doors.sock` до явного
 переключения.
 
-`pcrt-door` состоит из pure Rust library и тонкого `pcrt-door-gateway` binary:
+Door subsystem состоит из protocol/state library, ZeroMQ transport adapter и
+тонкого gateway binary:
 
 ```text
 ByteSource -> raw byte chunks -> StreamDecoder -> packet validation -> DoorStateMachine
-                                                                    |
-                                                                    v
-                                                          ZeroMQ snapshot publisher
+                                                                     |
+                                                                     v
+                                             pcrt-door wire encoding -> pcrt-door-zmq publisher
 ```
 
-Library не знает serial device, ZeroMQ, systemd, wall clock или файловую систему.
-Gateway adapter владеет source I/O, monotonic clock, reconnect и shutdown. Это
-позволяет детерминированно тестировать parser и state policy без контроллера двери.
+`pcrt-door` не знает serial device, ZeroMQ, systemd, wall clock или файловую
+систему. `pcrt-door-zmq` владеет PUB/SUB sockets и безопасным IPC endpoint
+lifecycle. Gateway владеет source I/O, monotonic clock, reconnect и shutdown.
+Это позволяет детерминированно тестировать parser и state policy без контроллера
+двери и переиспользовать один subscriber в recorder/processor.
 
 ## Неизменяемые compatibility contracts
 
@@ -262,17 +265,17 @@ Publisher отправляет aggregate, затем per-door snapshots по asc
 Одна publish attempt failure не меняет FSM/sequence; она логируется и увеличивает
 metric. PUB остаётся lossy, без ACK и persistence.
 
-Для совместимости первый release поддерживает форматы endpoint, которые принимает
-libzmq. Для `ipc://`:
+`pcrt-door-zmq` поддерживает endpoint formats, которые принимает libzmq. Для
+`ipc://` transport adapter:
 
-- gateway создаёт parent только если это явно configured runtime directory и сначала
+- создаёт parent только если это явно configured runtime directory и сначала
   берёт non-blocking exclusive lock `<instance>.lock` в том же runtime directory;
 - при занятом lock второй compliant publisher завершается до попытки bind;
 - перед bind pathname проверяется через `symlink_metadata`: regular file, symlink и
   directory являются fatal configuration error;
 - existing socket сначала проверяется POSIX Unix-domain connect attempt, не ZMQ
   `connect`: успешное OS-level соединение означает active owner и является fatal;
-  `ECONNREFUSED`/`ENOENT` после взятого lock означает stale socket, который gateway
+  `ECONNREFUSED`/`ENOENT` после взятого lock означает stale socket, который adapter
   может удалить; остальные ошибки являются fatal и сохраняют pathname для
   диагностики;
 - socket получает group-readable permissions, заданные systemd `RuntimeDirectory`/
@@ -284,9 +287,10 @@ libzmq. Для `ipc://`:
 
 ## Serial lifecycle и binary
 
-`pcrt-door-gateway` владеет `ByteSource` adapter, reconnect loop, ZeroMQ publisher,
-metrics и `pcrt-service` shutdown token. Его production source - `SerialByteSource`.
-Его state:
+`pcrt-door-gateway` владеет `ByteSource` adapter, composition loop, metrics и
+`pcrt-service` shutdown token. `GatewayEngine` владеет decoder/FSM lifecycle,
+reconnect schedule и liveness transitions. `pcrt-door-zmq` владеет `ZeroMQ` publisher
+и endpoint lifecycle. Production source - `SerialByteSource`. Gateway state:
 
 ```text
 starting -> binding_publisher -> connecting_serial -> reading
@@ -297,7 +301,7 @@ starting -> binding_publisher -> connecting_serial -> reading
 Порядок startup:
 
 1. Parse/redact validate config.
-2. Bind endpoint exclusively.
+2. Bind endpoint exclusively through `pcrt-door-zmq`.
 3. Publish initial stale snapshot.
 4. Open configured `ByteSource`: serial fixed port/scan в production либо Unix
    test stream при включённом test feature.
@@ -343,8 +347,8 @@ requires `SERIAL_TIMEOUT <= HEARTBEAT_PUBLISH_SEC`, so a silent/reconnecting ser
 input cannot prevent stale transition or heartbeat publication.
 
 On `SIGTERM`: stop opening new ports, stop accepting new frames, publish no synthetic
-closed state, close serial, close publisher, remove only gateway-owned IPC socket,
-and finish within systemd `TimeoutStopSec`. Cached state is intentionally not
+closed state, close serial, close publisher, remove only transport-adapter-owned IPC
+socket, and finish within systemd `TimeoutStopSec`. Cached state is intentionally not
 persisted: restart begins stale/closed until fresh controller telemetry arrives.
 
 The first deployment unit runs as dedicated `pcrt` user with serial-device group
@@ -357,18 +361,18 @@ are validated against the target distribution before enabling the unit.
 
 ## Adapter dependencies and concurrency
 
-`pcrt-door` library has only `pcrt-model` dependency. `pcrt-door-gateway` uses:
+`pcrt-door` library has only `pcrt-model` dependency. `pcrt-door-zmq` uses `zmq`/
+libzmq and owns PUB/SUB/IPC behavior. `pcrt-door-gateway` uses:
 
 - `serialport` for configured RS-232 settings;
-- `zmq`/libzmq for byte-compatible PUB IPC;
+- `pcrt-door-zmq` for byte-compatible PUB IPC;
 - `pcrt-config` for precedence/redaction and `pcrt-service` for shutdown/health.
 
-The first binary uses a bounded blocking byte-source worker rather than making the
-domain library async. The worker owns the active source and sends bounded raw
-chunks/events to a main gateway loop. The main loop owns `StreamDecoder`, FSM and
-ZeroMQ socket, selects channel input with stale/heartbeat deadlines and uses
-non-blocking PUB sends. A slow subscriber or HWM exhaustion therefore drops only a
-publish attempt and never delays stale transition or source recovery.
+The first binary uses synchronous bounded reads rather than making the domain library
+async. `runtime` owns the active source and concrete publisher; `GatewayEngine` owns
+`StreamDecoder`, FSM and timer decisions. `pcrt-door-zmq` uses non-blocking PUB sends,
+so a slow subscriber or HWM exhaustion drops only a publish attempt and never changes
+FSM state or source recovery.
 
 ## Consumer policy and migration
 
@@ -435,8 +439,8 @@ Required tests:
    errors/silence, scan failure, accepted discovery handle ownership,
    disconnect/reconnect and shutdown. PTY test is optional target-hardware coverage,
    not a local/CI prerequisite.
-7. IPC ownership tests: regular file/symlink/active socket never unlinked; stale
-   owned socket cleanup and single publisher bind behavior.
+7. `pcrt-door-zmq` IPC ownership tests: regular file/symlink/active socket never
+   unlinked; stale owned socket cleanup and single publisher bind behavior.
 8. Consumer contract tests: recorder stale/local-expiry close, processor stale policy
    selected explicitly, malformed frames/messages and slow joiner behavior.
 9. Shadow-run comparison harness with capture/replay of serial byte stream and emitted
@@ -489,17 +493,20 @@ Promotion gates:
 
 Implemented:
 
-- `pcrt-door`: fixed-offset packet parser, bounded stream decoder, stale FSM and
-  compatible snapshot encoder;
+- `pcrt-door`: separated `controller`, `state` and `wire` modules for fixed-offset
+  packet parsing, bounded stream decoding, stale FSM and compatible snapshot encoding;
+- `pcrt-door-zmq`: reusable PUB/SUB adapter, IPC ownership lifecycle and latest-state
+  subscriber used by recorder;
 - static 3/4-door frame, rejection, stream and snapshot fixtures;
 - `pcrt-door-gateway --serial-port` and `--serial-port-find`: configurable
   baudrate/data bits/parity/stop bits/read timeout, reconnect delay and fixed-port
   discovery fallback, all feeding the same decoder/FSM path;
-- real `ZeroMQ` PUB output for aggregate and per-door one-frame messages;
+- real `ZeroMQ` PUB output for aggregate and per-door one-frame messages through
+  `pcrt-door-zmq`;
 - `SIGINT`/`SIGTERM` shutdown through `pcrt-service::ShutdownToken`, without a
   synthetic closed snapshot;
-- IPC endpoint ownership lock, symlink/regular-file rejection and stale-socket
-  removal only after failed local connect;
+- IPC endpoint ownership lock, symlink/regular-file rejection and stale-socket removal
+  only after failed local connect;
 - config precedence `defaults < config.env < door_gateway.env < environment < CLI`,
   with `NUMBER_CAMS` only as the `DOOR_COUNT` fallback;
 - structured health events for source connectivity, stale state, last valid packet

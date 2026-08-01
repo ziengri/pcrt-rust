@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use pcrt_door_zmq::{DoorSubscriber, DoorSubscription, DoorUpdate};
 use pcrt_recording::{
     lifecycle::RecordingLimits,
     recorder::{FfmpegEncoderFactory, Recorder, RecorderConfig},
@@ -17,7 +18,6 @@ use pcrt_recording::{
 };
 use pcrt_service::ShutdownToken;
 use pcrt_storage::SessionStorage;
-use serde::Deserialize;
 
 const DEFAULT_SESSIONS_DIR: &str = "sessions";
 const DEFAULT_ENDPOINT: &str = "ipc:///run/doors.sock";
@@ -38,70 +38,6 @@ struct RecorderServiceConfig {
     exit_after: Option<Duration>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct DoorMessage {
-    state: u8,
-    stale: bool,
-}
-
-struct DoorSubscriber {
-    _context: zmq::Context,
-    socket: zmq::Socket,
-    topic: String,
-    latest: Option<DoorMessage>,
-}
-
-impl DoorSubscriber {
-    fn connect(endpoint: &str, door_channel: u8) -> Result<Self, String> {
-        Self::connect_with_context(zmq::Context::new(), endpoint, door_channel)
-    }
-
-    fn connect_with_context(
-        context: zmq::Context,
-        endpoint: &str,
-        door_channel: u8,
-    ) -> Result<Self, String> {
-        let socket = context.socket(zmq::SUB).map_err(zmq_error)?;
-        let topic = format!("door.{door_channel}.state");
-        socket.set_subscribe(topic.as_bytes()).map_err(zmq_error)?;
-        socket.set_rcvhwm(10).map_err(zmq_error)?;
-        socket.connect(endpoint).map_err(zmq_error)?;
-        Ok(Self {
-            _context: context,
-            socket,
-            topic,
-            latest: None,
-        })
-    }
-
-    fn door_open(&mut self, open_value: u8) -> bool {
-        self.drain();
-        self.latest
-            .as_ref()
-            .is_some_and(|message| !message.stale && message.state == open_value)
-    }
-
-    fn drain(&mut self) {
-        loop {
-            let Ok(frame) = self.socket.recv_string(zmq::DONTWAIT) else {
-                return;
-            };
-            let Ok(frame) = frame else {
-                continue;
-            };
-            let Some((topic, payload)) = frame.split_once(' ') else {
-                continue;
-            };
-            if topic != self.topic {
-                continue;
-            }
-            if let Ok(message) = serde_json::from_str::<DoorMessage>(payload) {
-                self.latest = Some(message);
-            }
-        }
-    }
-}
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("event=recorder_fatal error={error}");
@@ -115,13 +51,13 @@ fn run() -> Result<(), String> {
     install_shutdown_handler(shutdown.clone())?;
     let storage = SessionStorage::open(&config.sessions_dir).map_err(|error| error.to_string())?;
     let recovery = storage
-        .recover(now_ms())
+        .recover_recording(&config.camera_id, now_ms())
         .map_err(|error| error.to_string())?;
     log_event(
         "storage_recovered",
         &[
             ("failed_sessions", &recovery.failed_sessions.to_string()),
-            ("released_claims", &recovery.released_claims.to_string()),
+            ("promoted_captures", &recovery.promoted_captures.to_string()),
         ],
     );
     let recorder = Recorder::new(
@@ -145,7 +81,11 @@ fn run() -> Result<(), String> {
     let source = OpenCvVideoSource::open(&config.source).map_err(|error| error.to_string())?;
     let mut service = RecordingService::new(source, recorder, config.width, config.height)
         .map_err(|error| error.to_string())?;
-    let mut doors = DoorSubscriber::connect(&config.endpoint, config.door_channel)?;
+    let mut doors = DoorSubscriber::connect(
+        &config.endpoint,
+        DoorSubscription::SelectedDoor(config.door_channel),
+    )
+    .map_err(|error| error.to_string())?;
     let started_at = Instant::now();
     log_event(
         "recorder_started",
@@ -163,7 +103,14 @@ fn run() -> Result<(), String> {
             log_event("recorder_exit_after", &[]);
             break;
         }
-        let door_open = doors.door_open(config.door_open_value);
+        let _ = doors.drain();
+        let door_open = matches!(
+            doors.latest(),
+            Some(DoorUpdate::SelectedDoor {
+                state,
+                stale: false,
+            }) if state == config.door_open_value
+        );
         match service
             .step(door_open, now_ms())
             .map_err(|error| error.to_string())?
@@ -192,10 +139,6 @@ fn now_ms() -> i64 {
         .map_or(0, |duration| {
             i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
         })
-}
-
-fn zmq_error(error: zmq::Error) -> String {
-    format!("ZeroMQ: {error}")
 }
 
 fn log_event(event: &str, values: &[(&str, &str)]) {
@@ -430,7 +373,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{DoorMessage, parse_args};
+    use super::parse_args;
 
     #[test]
     fn config_uses_file_environment_and_cli_precedence() {
@@ -458,36 +401,5 @@ mod tests {
         assert_eq!(config.door_channel, 2);
         assert_eq!((config.width, config.height), (64, 256));
         assert_eq!(config.frames_per_second, 10);
-    }
-
-    #[test]
-    fn invalid_door_message_is_not_deserializable() {
-        assert!(serde_json::from_str::<DoorMessage>(r#"{\"stale\":false}"#).is_err());
-    }
-
-    #[test]
-    fn subscriber_uses_latest_fresh_selected_door_message() {
-        let endpoint = format!("inproc://pcrt-recorder-test-{}", std::process::id());
-        let context = zmq::Context::new();
-        let publisher = context.socket(zmq::PUB).unwrap();
-        publisher.bind(&endpoint).unwrap();
-        let mut subscriber =
-            super::DoorSubscriber::connect_with_context(context.clone(), &endpoint, 2).unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        publisher
-            .send(r#"door.1.state {"state":1,"stale":false}"#, 0)
-            .unwrap();
-        publisher
-            .send(r#"door.2.state {"state":1,"stale":false}"#, 0)
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(subscriber.door_open(1));
-
-        publisher
-            .send(r#"door.2.state {"state":1,"stale":true}"#, 0)
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!subscriber.door_open(1));
     }
 }

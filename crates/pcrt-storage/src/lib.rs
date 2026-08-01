@@ -529,24 +529,27 @@ impl SessionStorage {
         sync_directory(&self.state_directory(StorageState::Claimed))
     }
 
-    /// Восстанавливает storage после остановки recorder или processor.
+    /// Восстанавливает незавершённые capture только указанной камеры.
     ///
-    /// Незавершённый `capturing` переносится в `failed` без удаления файлов.
-    /// Capture с уже готовым manifest, оставшийся перед rename, публикуется в
-    /// `ready`. Все stale `claimed` возвращаются в `ready`, если videos
-    /// проходят проверку; повреждённые сессии переносятся в `failed`.
-    ///
-    /// Этот метод вызывается до запуска recorder и processor, когда нет активных
-    /// владельцев session-directory.
+    /// Метод не трогает `ready` и `claimed`, поэтому restart одного recorder не
+    /// вмешивается в processor или recorder другой камеры.
     ///
     /// # Errors
     ///
     /// Возвращает ошибку I/O или collision, который не позволяет безопасно
     /// завершить recovery.
-    pub fn recover(&self, recovered_at_ms: i64) -> Result<RecoveryReport, StorageError> {
+    pub fn recover_recording(
+        &self,
+        camera_id: &str,
+        recovered_at_ms: i64,
+    ) -> Result<RecoveryReport, StorageError> {
+        validate_camera_id(camera_id)?;
         let mut report = RecoveryReport::default();
 
         for session_id in self.session_ids_in(StorageState::Capturing)? {
+            if !session_belongs_to_camera(&session_id, camera_id) {
+                continue;
+            }
             let directory = self.path_for(StorageState::Capturing, &session_id);
             remove_recovery_markers(&directory)?;
             match Self::verify_completed(&directory, &session_id) {
@@ -572,6 +575,22 @@ impl SessionStorage {
                 }
             }
         }
+
+        Ok(report)
+    }
+
+    /// Восстанавливает processor-owned `ready` и abandoned `claimed` sessions.
+    ///
+    /// Prepared queue rows должны быть reconciled через
+    /// [`Self::delete_session_with_prepared_result`] до вызова этого метода.
+    /// `capturing` не затрагивается.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает ошибку I/O или collision, который не позволяет безопасно
+    /// завершить recovery.
+    pub fn recover_processing(&self, recovered_at_ms: i64) -> Result<RecoveryReport, StorageError> {
+        let mut report = RecoveryReport::default();
 
         for session_id in self.session_ids_in(StorageState::Ready)? {
             let directory = self.path_for(StorageState::Ready, &session_id);
@@ -631,6 +650,42 @@ impl SessionStorage {
         }
 
         Ok(report)
+    }
+
+    /// Удаляет filesystem session, результат которой уже durable в queue.
+    ///
+    /// Операция idempotent: отсутствие каталога означает, что удаление уже
+    /// завершилось. Удаляется только `claimed`; наличие того же ID в другом
+    /// lifecycle state является consistency error.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает ошибку при conflicting state или невозможности durable delete.
+    pub fn delete_session_with_prepared_result(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<bool, StorageError> {
+        for state in [
+            StorageState::Capturing,
+            StorageState::Ready,
+            StorageState::Failed,
+        ] {
+            if self.path_for(state, session_id).exists() {
+                return Err(StorageError::PreparedResultStateConflict {
+                    session_id: session_id.clone(),
+                    state: state.as_public(),
+                });
+            }
+        }
+        let claimed = self.path_for(StorageState::Claimed, session_id);
+        if !claimed.exists() {
+            return Ok(false);
+        }
+        ensure_directory(&claimed, "prepared result claimed session")?;
+        fs::remove_dir_all(&claimed)
+            .map_err(|error| StorageError::io("delete prepared result session", error))?;
+        sync_directory(&self.state_directory(StorageState::Claimed))?;
+        Ok(true)
     }
 
     /// Возвращает текущее Unix-время в миллисекундах для transitions storage.
@@ -774,6 +829,10 @@ pub enum StorageError {
         expected: SessionState,
         actual: SessionState,
     },
+    PreparedResultStateConflict {
+        session_id: SessionId,
+        state: SessionState,
+    },
     VideoIntegrity {
         path: PathBuf,
         message: String,
@@ -859,6 +918,12 @@ impl core::fmt::Display for StorageError {
                 display_session_state(*expected),
                 display_session_state(*actual)
             ),
+            Self::PreparedResultStateConflict { session_id, state } => write!(
+                formatter,
+                "prepared result conflicts with {} session state for {}",
+                display_session_state(*state),
+                session_id.as_str()
+            ),
             Self::VideoIntegrity { path, message } => {
                 write!(
                     formatter,
@@ -893,6 +958,7 @@ impl std::error::Error for StorageError {
             | Self::InvalidManifest { .. }
             | Self::IncompleteManifest(_)
             | Self::UnexpectedManifestState { .. }
+            | Self::PreparedResultStateConflict { .. }
             | Self::VideoIntegrity { .. }
             | Self::ClockBeforeEpoch(_)
             | Self::ClockOutOfRange => None,
@@ -917,6 +983,27 @@ impl StorageState {
             Self::Failed => FAILED_DIRECTORY,
         }
     }
+
+    const fn as_public(self) -> SessionState {
+        match self {
+            Self::Capturing => SessionState::Capturing,
+            Self::Ready => SessionState::Ready,
+            Self::Claimed => SessionState::Claimed,
+            Self::Failed => SessionState::Failed,
+        }
+    }
+}
+
+fn session_belongs_to_camera(session_id: &SessionId, camera_id: &str) -> bool {
+    let Some(timestamp) = session_id
+        .as_str()
+        .strip_prefix("cam-")
+        .and_then(|value| value.strip_prefix(camera_id))
+        .and_then(|value| value.strip_prefix('-'))
+    else {
+        return false;
+    };
+    timestamp.parse::<i64>().is_ok_and(|value| value >= 0)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1661,7 +1748,7 @@ mod tests {
         assert_eq!(claim.manifest().state, SessionState::Claimed);
 
         assert_eq!(
-            storage.recover(300).unwrap(),
+            storage.recover_processing(300).unwrap(),
             RecoveryReport {
                 promoted_captures: 0,
                 released_claims: 1,
@@ -1682,7 +1769,7 @@ mod tests {
         fs::write(root.join("ready/session-1/camera-1.mkv"), b"tampered").unwrap();
 
         assert_eq!(
-            storage.recover(200).unwrap(),
+            storage.recover_processing(200).unwrap(),
             RecoveryReport {
                 promoted_captures: 0,
                 released_claims: 0,
@@ -1708,14 +1795,14 @@ mod tests {
     fn interrupted_capture_is_failed_without_deleting_its_video() {
         let root = test_root();
         let storage = SessionStorage::open(&root).unwrap();
-        let id = SessionId::new("session-1").unwrap();
+        let id = SessionStorage::session_id_for_capture("camera-1", 100).unwrap();
         let capture = storage
             .begin_capture(&id, CaptureMetadata::new("camera-1", 100))
             .unwrap();
         fs::write(capture.video_path("camera-1.mkv").unwrap(), b"partial").unwrap();
 
         assert_eq!(
-            storage.recover(200).unwrap(),
+            storage.recover_recording("camera-1", 200).unwrap(),
             RecoveryReport {
                 promoted_captures: 0,
                 released_claims: 0,
@@ -1723,9 +1810,52 @@ mod tests {
             }
         );
         assert_eq!(
-            fs::read(root.join("failed/session-1/camera-1.mkv")).unwrap(),
+            fs::read(root.join("failed/cam-camera-1-100/camera-1.mkv")).unwrap(),
             b"partial"
         );
+        remove_root(&root);
+    }
+
+    #[test]
+    fn recording_recovery_is_scoped_to_its_camera() {
+        let root = test_root();
+        let storage = SessionStorage::open(&root).unwrap();
+        let cam1 = SessionStorage::session_id_for_capture("1", 100).unwrap();
+        let cam2 = SessionStorage::session_id_for_capture("2", 100).unwrap();
+        storage
+            .begin_capture(&cam1, CaptureMetadata::new("source-1", 100))
+            .unwrap();
+        storage
+            .begin_capture(&cam2, CaptureMetadata::new("source-2", 100))
+            .unwrap();
+
+        assert_eq!(
+            storage.recover_recording("1", 200).unwrap().failed_sessions,
+            1
+        );
+        assert!(root.join("failed/cam-1-100").exists());
+        assert!(root.join("capturing/cam-2-100.tmp").exists());
+        remove_root(&root);
+    }
+
+    #[test]
+    fn prepared_result_cleanup_is_idempotent_and_rejects_ready_session() {
+        let root = test_root();
+        let storage = SessionStorage::open(&root).unwrap();
+        completed_session(&storage, "session-1", 100);
+        let id = SessionId::new("session-1").unwrap();
+
+        assert!(matches!(
+            storage.delete_session_with_prepared_result(&id),
+            Err(StorageError::PreparedResultStateConflict {
+                state: SessionState::Ready,
+                ..
+            })
+        ));
+        let claim = storage.claim_next_ready(200).unwrap().unwrap();
+        assert_eq!(claim.session_id(), &id);
+        assert!(storage.delete_session_with_prepared_result(&id).unwrap());
+        assert!(!storage.delete_session_with_prepared_result(&id).unwrap());
         remove_root(&root);
     }
 
@@ -1742,7 +1872,13 @@ mod tests {
         storage.discard_capture(&capture).unwrap();
 
         assert!(!root.join("capturing/session-1.tmp").exists());
-        assert_eq!(storage.recover(200).unwrap().failed_sessions, 0);
+        assert_eq!(
+            storage
+                .recover_recording("camera-1", 200)
+                .unwrap()
+                .failed_sessions,
+            0
+        );
         remove_root(&root);
     }
 
@@ -1767,7 +1903,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(storage.recover(300).unwrap().failed_sessions, 1);
+        assert_eq!(storage.recover_processing(300).unwrap().failed_sessions, 1);
         assert!(root.join("failed/session-1/camera-1.mkv").exists());
         remove_root(&root);
     }

@@ -940,9 +940,9 @@ name = "pcrt-door-gateway"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
- "fs2",
  "glob",
  "pcrt-door",
+ "pcrt-door-zmq",
  "pcrt-service",
  "serde",
  "serde_json",
@@ -951,21 +951,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcrt-door-zmq"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "pcrt-door",
+ "serde",
+ "serde_json",
+ "zmq",
+]
+
+[[package]]
 name = "pcrt-model"
 version = "0.1.0"
+
+[[package]]
+name = "pcrt-processing"
+version = "0.1.0"
+dependencies = [
+ "pcrt-model",
+ "pcrt-result-queue",
+ "pcrt-service",
+ "pcrt-storage",
+ "tempfile",
+]
 
 [[package]]
 name = "pcrt-recorder"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
+ "pcrt-door-zmq",
  "pcrt-recording",
  "pcrt-service",
  "pcrt-storage",
- "serde",
- "serde_json",
  "tempfile",
- "zmq",
 ]
 
 [[package]]

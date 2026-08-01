@@ -20,13 +20,15 @@ test-transport = []
 
 [dependencies]
 pcrt-door = { path = "../../crates/pcrt-door" }
+pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 ctrlc = "3.5.2"
-fs2 = "0.4.3"
 glob = "0.3.3"
 serialport = { version = "4.8.1", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+
+[dev-dependencies]
 zmq = "0.10.0"
 
 [lints]
