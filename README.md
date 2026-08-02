@@ -42,4 +42,5 @@ cargo fmt --all --check
 [API-клиент](docs/modules/pcrt-api-client.md),
 [storage](docs/modules/pcrt-storage.md),
 [door](docs/modules/pcrt-door.md),
+[door ZMQ](docs/modules/pcrt-door-zmq.md),
 [uploader](docs/modules/pcrt-uploader.md).

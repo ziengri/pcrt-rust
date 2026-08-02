@@ -2,7 +2,7 @@ use core::fmt;
 
 /// Error returned while configuring, decoding or encoding door data.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DoorError {
+pub(crate) enum ProtocolError {
     /// The controller protocol supports exactly three or four doors.
     UnsupportedDoorCount(u8),
     /// A full packet has an unexpected fixed size.
@@ -35,11 +35,9 @@ pub enum DoorError {
     },
     /// A packet was parsed for a different controller configuration.
     PacketDoorCountMismatch { packet: u8, state_machine: u8 },
-    /// JSON timestamps must be finite values.
-    InvalidTimestamp,
 }
 
-impl fmt::Display for DoorError {
+impl fmt::Display for ProtocolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedDoorCount(count) => {
@@ -74,9 +72,8 @@ impl fmt::Display for DoorError {
                 formatter,
                 "packet has {packet} doors but state machine expects {state_machine}"
             ),
-            Self::InvalidTimestamp => formatter.write_str("door snapshot timestamp must be finite"),
         }
     }
 }
 
-impl std::error::Error for DoorError {}
+impl std::error::Error for ProtocolError {}

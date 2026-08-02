@@ -2,7 +2,6 @@
 members = [
     "crates/pcrt-config",
     "crates/pcrt-api-client",
-    "crates/pcrt-door",
     "crates/pcrt-door-zmq",
     "crates/pcrt-model",
     "crates/pcrt-processing",

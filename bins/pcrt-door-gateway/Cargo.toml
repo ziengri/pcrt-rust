@@ -19,8 +19,8 @@ required-features = ["test-transport"]
 test-transport = []
 
 [dependencies]
-pcrt-door = { path = "../../crates/pcrt-door" }
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
+pcrt-model = { path = "../../crates/pcrt-model" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 ctrlc = "3.5.2"
 glob = "0.3.3"

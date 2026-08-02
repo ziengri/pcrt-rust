@@ -1,4 +1,4 @@
-//! Serial-port and feature-gated local byte-source adapter.
+//! Serial-port and feature-gated local byte source.
 
 use std::io::{self, Read};
 

@@ -37,7 +37,7 @@ rust/
     pcrt-storage/     # manifest, атомарный session-dir и recovery видео
     pcrt-result-queue/# SQLite-очередь готовых результатов для uploader
     pcrt-api-client/  # HTTP-клиент API пассажиропотока, auth, DTO и ответы
-    pcrt-door/        # RS-232 parser/FSM и ZeroMQ publisher/subscriber
+    pcrt-door-zmq/    # shared DoorsState, ZeroMQ PUB/SUB и IPC ownership
     pcrt-recording/   # камера, ffmpeg и recorder FSM
     pcrt-processing/  # очередь, линии подсчёта, InferenceBackend
     pcrt-monitoring/  # probes, journal, transition rules
@@ -58,9 +58,11 @@ rust/
     system/
 ```
 
-Сейчас созданы `pcrt-model`, `pcrt-config`, `pcrt-service`, `pcrt-storage`,
-`pcrt-result-queue`, `pcrt-api-client` и `pcrt-uploader`. Остальные crate
-добавляются вместе с первым работающим потребителем, а не заранее пустыми.
+Shared building blocks создаются вместе с первым работающим consumer, а не заранее
+пустыми. `pcrt-door-zmq` является таким building block: gateway публикует через
+него `DoorsState`, а recorder и processor получают тот же contract через subscriber.
+Private controller protocol/FSM остаётся внутри `pcrt-door-gateway`, а не в новом
+shared crate.
 
 ## Правила зависимостей
 
@@ -71,10 +73,14 @@ pcrt-model        <- pcrt-storage       <- pcrt-recording / pcrt-processing
 pcrt-api-client  <- pcrt-uploader
 pcrt-config     <- все библиотеки и бинарники
 pcrt-service    <- сервисные библиотеки и бинарники
-pcrt-door       <- pcrt-recorder
+pcrt-door-zmq   <- pcrt-door-gateway / pcrt-recorder / pcrt-processor
 ```
 
 - `pcrt-model` не знает о файловой системе, SQLite, HTTP, ZeroMQ, ffmpeg или OpenVINO.
+- `pcrt-door-zmq` владеет shared door-bus contract, ZeroMQ PUB/SUB и IPC endpoint,
+  но не знает RS-232 protocol, serial lifecycle или consumer policy.
+- `pcrt-door-gateway` владеет private controller decoder/FSM и serial lifecycle;
+  recorder и processor получают только shared door-bus state.
 - `pcrt-storage` владеет только файловыми сессиями и не обращается к SQLite.
 - `pcrt-result-queue` владеет SQLite, схемой очереди, миграциями и состоянием строк.
 - Только `pcrt-result-queue` создаёт, выдаёт, удаляет и переносит в DLQ сообщения

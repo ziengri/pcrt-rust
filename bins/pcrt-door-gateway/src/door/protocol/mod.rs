@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 
 use pcrt_model::door::{DoorId, DoorState, DoorTelemetry};
 
-use crate::DoorError;
+mod error;
+
+pub(crate) use error::ProtocolError;
 
 /// Prefix of every controller packet.
-pub const HEADER: &[u8] = b"!DOORS:";
+pub(crate) const HEADER: &[u8] = b"!DOORS:";
 // Live controller packets encode voltage in one byte: `<id>=<state>,<voltage>;`.
 const DOOR_RECORD_SIZE: usize = 6;
 const MIN_DOOR_COUNT: u8 = 3;
@@ -20,19 +22,19 @@ const fn packet_size_for(door_count: u8) -> usize {
 
 /// Validated number of door records configured for one controller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DoorCount(u8);
+pub(crate) struct DoorCount(u8);
 
 impl DoorCount {
     /// Creates a count supported by the current controller protocol: 3 or 4.
     ///
     /// # Errors
     ///
-    /// Returns [`DoorError::UnsupportedDoorCount`] for every other value.
-    pub const fn new(value: u8) -> Result<Self, DoorError> {
+    /// Returns [`ProtocolError::UnsupportedDoorCount`] for every other value.
+    pub(crate) const fn new(value: u8) -> Result<Self, ProtocolError> {
         if value >= MIN_DOOR_COUNT && value <= MAX_DOOR_COUNT {
             Ok(Self(value))
         } else {
-            Err(DoorError::UnsupportedDoorCount(value))
+            Err(ProtocolError::UnsupportedDoorCount(value))
         }
     }
 
@@ -51,24 +53,12 @@ impl DoorCount {
 
 /// Validated complete controller packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DoorPacket {
+pub(crate) struct ControllerPacket {
     door_count: DoorCount,
     doors: BTreeMap<DoorId, DoorTelemetry>,
 }
 
-impl DoorPacket {
-    /// Returns the controller count this packet was validated against.
-    #[must_use]
-    pub const fn door_count(&self) -> DoorCount {
-        self.door_count
-    }
-
-    /// Returns complete telemetry for every configured door.
-    #[must_use]
-    pub const fn doors(&self) -> &BTreeMap<DoorId, DoorTelemetry> {
-        &self.doors
-    }
-
+impl ControllerPacket {
     pub(crate) fn into_parts(self) -> (DoorCount, BTreeMap<DoorId, DoorTelemetry>) {
         (self.door_count, self.doors)
     }
@@ -76,7 +66,7 @@ impl DoorPacket {
 
 /// Fixed-size parser for one configured controller protocol.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DoorProtocol {
+pub(crate) struct DoorProtocol {
     door_count: DoorCount,
 }
 
@@ -85,8 +75,8 @@ impl DoorProtocol {
     ///
     /// # Errors
     ///
-    /// Returns [`DoorError::UnsupportedDoorCount`] for values other than three or four.
-    pub const fn new(door_count: u8) -> Result<Self, DoorError> {
+    /// Returns [`ProtocolError::UnsupportedDoorCount`] for values other than three or four.
+    pub(crate) const fn new(door_count: u8) -> Result<Self, ProtocolError> {
         match DoorCount::new(door_count) {
             Ok(door_count) => Ok(Self { door_count }),
             Err(error) => Err(error),
@@ -107,16 +97,16 @@ impl DoorProtocol {
     ///
     /// Returns an error when packet shape, configured IDs or telemetry values violate
     /// the controller contract.
-    pub fn parse_packet(self, bytes: &[u8]) -> Result<DoorPacket, DoorError> {
+    pub(crate) fn parse_packet(self, bytes: &[u8]) -> Result<ControllerPacket, ProtocolError> {
         let expected_size = self.door_count.packet_size();
         if bytes.len() != expected_size {
-            return Err(DoorError::InvalidPacketLength {
+            return Err(ProtocolError::InvalidPacketLength {
                 actual: bytes.len(),
                 expected: expected_size,
             });
         }
         if !bytes.starts_with(HEADER) {
-            return Err(DoorError::InvalidPrefix);
+            return Err(ProtocolError::InvalidPrefix);
         }
 
         let mut doors = BTreeMap::new();
@@ -125,35 +115,35 @@ impl DoorProtocol {
             let record = &bytes[offset..offset + DOOR_RECORD_SIZE];
             let door_id_raw = record[0];
             let Some(door_id) = DoorId::new(door_id_raw.saturating_sub(b'0')) else {
-                return Err(DoorError::InvalidDoorId(door_id_raw));
+                return Err(ProtocolError::InvalidDoorId(door_id_raw));
             };
             if door_id_raw < b'1' || door_id.get() > self.door_count.get() {
-                return Err(DoorError::UnexpectedDoorId(
+                return Err(ProtocolError::UnexpectedDoorId(
                     door_id_raw.saturating_sub(b'0'),
                 ));
             }
             if record[1] != b'=' {
-                return Err(DoorError::InvalidSeparator {
+                return Err(ProtocolError::InvalidSeparator {
                     door_id: door_id.get(),
                     expected: b'=',
                     actual: record[1],
                 });
             }
             let Some(state) = DoorState::from_protocol_byte(record[2]) else {
-                return Err(DoorError::InvalidState {
+                return Err(ProtocolError::InvalidState {
                     door_id: door_id.get(),
                     actual: record[2],
                 });
             };
             if record[3] != b',' {
-                return Err(DoorError::InvalidSeparator {
+                return Err(ProtocolError::InvalidSeparator {
                     door_id: door_id.get(),
                     expected: b',',
                     actual: record[3],
                 });
             }
             if record[5] != b';' {
-                return Err(DoorError::InvalidSeparator {
+                return Err(ProtocolError::InvalidSeparator {
                     door_id: door_id.get(),
                     expected: b';',
                     actual: record[5],
@@ -164,20 +154,20 @@ impl DoorProtocol {
                 voltage_raw: u16::from(record[4]),
             };
             if doors.insert(door_id, telemetry).is_some() {
-                return Err(DoorError::DuplicateDoorId(door_id.get()));
+                return Err(ProtocolError::DuplicateDoorId(door_id.get()));
             }
         }
 
         for expected_id in 1..=self.door_count.get() {
             let Some(expected_id) = DoorId::new(expected_id) else {
-                return Err(DoorError::InvalidDoorId(expected_id));
+                return Err(ProtocolError::InvalidDoorId(expected_id));
             };
             if !doors.contains_key(&expected_id) {
-                return Err(DoorError::MissingDoorId(expected_id.get()));
+                return Err(ProtocolError::MissingDoorId(expected_id.get()));
             }
         }
 
-        Ok(DoorPacket {
+        Ok(ControllerPacket {
             door_count: self.door_count,
             doors,
         })
@@ -186,11 +176,11 @@ impl DoorProtocol {
 
 /// Stream-level event emitted for each decoded packet or recovery decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DecodeEvent {
+pub(crate) enum DecodeEvent {
     /// One complete valid packet was decoded.
-    Packet(DoorPacket),
+    Packet(ControllerPacket),
     /// One complete fixed-size candidate was semantically invalid.
-    Rejected(DoorError),
+    Rejected(ProtocolError),
     /// A new header interrupted an incomplete older packet.
     Truncated,
     /// Input exceeded the bounded decoder buffer and older bytes were discarded.
@@ -199,7 +189,7 @@ pub enum DecodeEvent {
 
 /// Bounded byte-stream decoder for packets parsed by [`DoorProtocol`].
 #[derive(Clone, Debug)]
-pub struct StreamDecoder {
+pub(crate) struct StreamDecoder {
     protocol: DoorProtocol,
     buffer: Vec<u8>,
 }
@@ -207,7 +197,7 @@ pub struct StreamDecoder {
 impl StreamDecoder {
     /// Creates a decoder for one fixed controller protocol.
     #[must_use]
-    pub fn new(protocol: DoorProtocol) -> Self {
+    pub(crate) fn new(protocol: DoorProtocol) -> Self {
         Self {
             protocol,
             buffer: Vec::with_capacity(MAX_STREAM_BUFFER),
@@ -219,7 +209,7 @@ impl StreamDecoder {
     /// Chunks may split packets at arbitrary positions, contain garbage, concatenate
     /// packets or end mid-frame. The internal buffer is bounded independently of the
     /// caller-provided input slice.
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<DecodeEvent> {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<DecodeEvent> {
         let mut events = Vec::new();
         self.append_bounded(bytes, &mut events);
 
@@ -295,4 +285,38 @@ fn find_header(bytes: &[u8]) -> Option<usize> {
     bytes
         .windows(HEADER.len())
         .position(|window| window == HEADER)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DecodeEvent, DoorProtocol, HEADER, StreamDecoder};
+
+    #[test]
+    fn parses_unordered_complete_packet() {
+        let protocol = DoorProtocol::new(3).unwrap();
+        let packet = protocol
+            .parse_packet(&[HEADER, b"3=\x01,9;1=\0,4;2=\x01,7;"].concat())
+            .unwrap();
+
+        assert_eq!(packet.into_parts().1.len(), 3);
+    }
+
+    #[test]
+    fn decoder_resynchronizes_after_garbage_and_partial_frame() {
+        let mut decoder = StreamDecoder::new(DoorProtocol::new(3).unwrap());
+        assert!(decoder.push(b"garbage!DO").is_empty());
+
+        let events = decoder.push(b"ORS:1=\0,0;2=\x01,1;3=\0,2;");
+        assert!(matches!(events.as_slice(), [DecodeEvent::Packet(_)]));
+    }
+
+    #[test]
+    fn rejects_invalid_state() {
+        let protocol = DoorProtocol::new(3).unwrap();
+        assert!(
+            protocol
+                .parse_packet(&[HEADER, b"1=\x02,0;2=\0,0;3=\0,0;"].concat())
+                .is_err()
+        );
+    }
 }

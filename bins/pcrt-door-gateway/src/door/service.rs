@@ -1,47 +1,13 @@
 use std::time::{Duration, Instant};
 
-use pcrt_door::{
-    DecodeEvent, DoorError, DoorProtocol, DoorSnapshot, DoorStateMachine, StreamDecoder,
+use pcrt_door_zmq::DoorsState;
+
+use super::{
+    DecodeEvent, DoorProtocol, DoorStateMachine, GatewayEffect, GatewayHealth, StreamDecoder,
 };
 
-/// Counters and connection timestamps owned by the gateway lifecycle.
-#[derive(Default)]
-pub(crate) struct GatewayHealth {
-    pub(crate) connected: bool,
-    pub(crate) valid_packets: u64,
-    pub(crate) rejected_packets: u64,
-    pub(crate) truncated_packets: u64,
-    pub(crate) overflow_events: u64,
-    pub(crate) reconnect_attempts: u64,
-    pub(crate) publish_failures: u64,
-    pub(crate) connected_at: Option<Instant>,
-    pub(crate) last_valid_packet: Option<Instant>,
-}
-
-impl GatewayHealth {
-    fn serial_liveness_expired(&self, now: Instant, timeout: Duration) -> bool {
-        let Some(connected_at) = self.connected_at else {
-            return false;
-        };
-        now.duration_since(connected_at) >= timeout
-            && self
-                .last_valid_packet
-                .is_none_or(|last_valid_packet| now.duration_since(last_valid_packet) >= timeout)
-    }
-}
-
-/// One effect produced by byte decoding or a periodic gateway tick.
-pub(crate) enum GatewayOutput {
-    Publish(DoorSnapshot),
-    PacketRejected(DoorError),
-    PacketTruncated,
-    DecoderOverflow,
-    DisconnectForLiveness,
-    Heartbeat(DoorSnapshot),
-}
-
 /// Deterministic gateway lifecycle between byte source and snapshot publisher.
-pub(crate) struct GatewayEngine {
+pub(crate) struct DoorService {
     protocol: DoorProtocol,
     decoder: StreamDecoder,
     machine: DoorStateMachine,
@@ -52,7 +18,7 @@ pub(crate) struct GatewayEngine {
     next_connect_at: Instant,
 }
 
-impl GatewayEngine {
+impl DoorService {
     pub(crate) fn new(
         protocol: DoorProtocol,
         stale_timeout: Duration,
@@ -72,7 +38,7 @@ impl GatewayEngine {
         }
     }
 
-    pub(crate) const fn snapshot(&self) -> &DoorSnapshot {
+    pub(crate) const fn snapshot(&self) -> &DoorsState {
         self.machine.snapshot()
     }
 
@@ -111,7 +77,7 @@ impl GatewayEngine {
         self.next_connect_at = now + self.reconnect_delay;
     }
 
-    pub(crate) fn on_bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<GatewayOutput> {
+    pub(crate) fn on_bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<GatewayEffect> {
         let mut outputs = Vec::new();
         for event in self.decoder.push(bytes) {
             match event {
@@ -119,20 +85,20 @@ impl GatewayEngine {
                     self.health.valid_packets = self.health.valid_packets.saturating_add(1);
                     self.health.last_valid_packet = Some(now);
                     if let Ok(snapshot) = self.machine.accept(packet, now) {
-                        outputs.push(GatewayOutput::Publish(snapshot.clone()));
+                        outputs.push(GatewayEffect::Publish(snapshot.clone()));
                     }
                 }
                 DecodeEvent::Rejected(error) => {
                     self.health.rejected_packets = self.health.rejected_packets.saturating_add(1);
-                    outputs.push(GatewayOutput::PacketRejected(error));
+                    outputs.push(GatewayEffect::PacketRejected(error));
                 }
                 DecodeEvent::Truncated => {
                     self.health.truncated_packets = self.health.truncated_packets.saturating_add(1);
-                    outputs.push(GatewayOutput::PacketTruncated);
+                    outputs.push(GatewayEffect::PacketTruncated);
                 }
                 DecodeEvent::Overflow => {
                     self.health.overflow_events = self.health.overflow_events.saturating_add(1);
-                    outputs.push(GatewayOutput::DecoderOverflow);
+                    outputs.push(GatewayEffect::DecoderOverflow);
                 }
             }
         }
@@ -143,7 +109,7 @@ impl GatewayEngine {
         &mut self,
         now: Instant,
         heartbeat_interval: Duration,
-    ) -> Vec<GatewayOutput> {
+    ) -> Vec<GatewayEffect> {
         let mut outputs = Vec::new();
         if self.health.connected
             && self
@@ -151,14 +117,14 @@ impl GatewayEngine {
                 .serial_liveness_expired(now, self.serial_liveness_timeout)
         {
             self.source_disconnected(now);
-            outputs.push(GatewayOutput::DisconnectForLiveness);
+            outputs.push(GatewayEffect::DisconnectForLiveness);
         }
         if let Some(snapshot) = self.machine.mark_stale_if_due(now) {
-            outputs.push(GatewayOutput::Publish(snapshot.clone()));
+            outputs.push(GatewayEffect::Publish(snapshot.clone()));
             self.last_heartbeat = now;
         }
         if now.duration_since(self.last_heartbeat) >= heartbeat_interval {
-            outputs.push(GatewayOutput::Heartbeat(self.machine.snapshot().clone()));
+            outputs.push(GatewayEffect::Heartbeat(self.machine.snapshot().clone()));
             self.last_heartbeat = now;
         }
         outputs
@@ -169,15 +135,15 @@ impl GatewayEngine {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pcrt_door::{DoorProtocol, HEADER};
+    use crate::door::{DoorProtocol, HEADER};
 
-    use super::{GatewayEngine, GatewayOutput};
+    use super::{DoorService, GatewayEffect};
 
     #[test]
     fn disconnected_source_drops_partial_serial_packet() {
         let protocol = DoorProtocol::new(3).unwrap();
         let started = Instant::now();
-        let mut engine = GatewayEngine::new(
+        let mut engine = DoorService::new(
             protocol,
             Duration::from_secs(10),
             Duration::from_secs(20),
@@ -193,7 +159,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .all(|event| !matches!(event, GatewayOutput::Publish(_)))
+                .all(|event| !matches!(event, GatewayEffect::Publish(_)))
         );
     }
 
@@ -201,7 +167,7 @@ mod tests {
     fn liveness_disconnect_resets_state_and_schedules_retry() {
         let protocol = DoorProtocol::new(3).unwrap();
         let started = Instant::now();
-        let mut engine = GatewayEngine::new(
+        let mut engine = DoorService::new(
             protocol,
             Duration::from_secs(10),
             Duration::from_secs(5),
@@ -214,7 +180,7 @@ mod tests {
 
         assert!(matches!(
             outputs.as_slice(),
-            [GatewayOutput::DisconnectForLiveness]
+            [GatewayEffect::DisconnectForLiveness]
         ));
         assert!(!engine.health().connected);
         assert!(!engine.reconnect_due(started + Duration::from_secs(6)));
@@ -241,7 +207,7 @@ mod tests {
     fn fresh_packet_publishes_snapshot_and_prevents_liveness_disconnect() {
         let protocol = DoorProtocol::new(3).unwrap();
         let started = Instant::now();
-        let mut engine = GatewayEngine::new(
+        let mut engine = DoorService::new(
             protocol,
             Duration::from_secs(10),
             Duration::from_secs(5),
@@ -253,7 +219,7 @@ mod tests {
 
         assert!(matches!(
             engine.on_bytes(&bytes, started).as_slice(),
-            [GatewayOutput::Publish(_)]
+            [GatewayEffect::Publish(_)]
         ));
         assert!(
             engine

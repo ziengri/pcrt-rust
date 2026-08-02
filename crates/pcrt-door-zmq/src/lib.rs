@@ -1,41 +1,98 @@
 #![forbid(unsafe_code)]
 //! `ZeroMQ` transport adapters for the PCRT door wire contract.
 //!
-//! Packet decoding, door state lifecycle and JSON encoding remain in `pcrt-door`.
-//! This crate owns only PUB/SUB sockets and secure ownership of IPC socket paths.
+//! This crate owns the shared door-bus state, PUB/SUB sockets and IPC socket paths.
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io,
     os::unix::{fs::FileTypeExt, net::UnixStream},
     path::PathBuf,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use fs2::FileExt;
-use pcrt_door::WireMessage;
-use serde::Deserialize;
+use pcrt_model::door::{DoorId, DoorState, DoorTelemetry};
+use serde::{Deserialize, Serialize};
 
-/// A `ZeroMQ` subscription supported by the current door protocol.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DoorSubscription {
-    Aggregate,
-    SelectedDoor(u8),
+/// Complete shared state published on the door bus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoorsState {
+    sequence: u64,
+    doors: BTreeMap<DoorId, DoorTelemetry>,
+    stale: bool,
 }
 
-impl DoorSubscription {
-    fn topic(self) -> String {
-        match self {
-            Self::Aggregate => "doors.state".to_owned(),
-            Self::SelectedDoor(channel) => format!("door.{channel}.state"),
+impl DoorsState {
+    /// Creates a complete state produced by the gateway state machine.
+    #[must_use]
+    pub fn new(sequence: u64, doors: BTreeMap<DoorId, DoorTelemetry>, stale: bool) -> Self {
+        Self {
+            sequence,
+            doors,
+            stale,
         }
+    }
+
+    /// Sequence changed only by accepted packets and stale transitions.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Complete telemetry for every configured door.
+    #[must_use]
+    pub const fn doors(&self) -> &BTreeMap<DoorId, DoorTelemetry> {
+        &self.doors
+    }
+
+    /// Whether telemetry is expired or has not yet been received.
+    #[must_use]
+    pub const fn stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Returns telemetry for one door.
+    #[must_use]
+    pub fn door(&self, door_id: DoorId) -> Option<&DoorTelemetry> {
+        self.doors.get(&door_id)
+    }
+
+    /// Whether any configured door is open.
+    #[must_use]
+    pub fn any_open(&self) -> bool {
+        self.doors
+            .values()
+            .any(|telemetry| telemetry.state == DoorState::Open)
+    }
+
+    /// Whether all configured doors are closed.
+    #[must_use]
+    pub fn all_closed(&self) -> bool {
+        !self.any_open()
     }
 }
 
-/// Latest valid state received for a [`DoorSubscription`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DoorUpdate {
-    Aggregate { all_closed: bool, stale: bool },
-    SelectedDoor { state: u8, stale: bool },
+/// Latest aggregate state together with the local subscriber receipt time.
+#[derive(Clone, Debug)]
+pub struct ReceivedDoorsState {
+    state: DoorsState,
+    received_at: Instant,
+}
+
+impl ReceivedDoorsState {
+    /// Returns the validated aggregate state.
+    #[must_use]
+    pub const fn state(&self) -> &DoorsState {
+        &self.state
+    }
+
+    /// Returns the local monotonic receipt time for consumer TTL policy.
+    #[must_use]
+    pub const fn received_at(&self) -> Instant {
+        self.received_at
+    }
 }
 
 /// `ZeroMQ` PUB socket which exclusively owns an optional IPC endpoint.
@@ -70,19 +127,28 @@ impl DoorPublisher {
         })
     }
 
-    /// Sends one already encoded protocol message without blocking the gateway.
+    /// Encodes and publishes aggregate and per-door compatibility messages.
     ///
     /// # Errors
     ///
-    /// Returns a `ZeroMQ` send failure. The caller chooses whether to retry or
-    /// continue publishing later messages from the same snapshot.
-    pub fn publish(&self, message: &WireMessage) -> Result<(), DoorZmqError> {
+    /// Returns a `ZeroMQ` or JSON encoding failure. The caller chooses whether to
+    /// retry later; a failure never changes the supplied state.
+    pub fn publish(&self, state: &DoorsState) -> Result<(), DoorZmqError> {
         let Some(socket) = &self.socket else {
             return Err(DoorZmqError::PublisherClosed);
         };
+        let timestamp = epoch_seconds();
+        let aggregate = encode_aggregate(state, timestamp)?;
         socket
-            .send(message.as_frame(), zmq::DONTWAIT)
-            .map_err(DoorZmqError::Zmq)
+            .send(&aggregate, zmq::DONTWAIT)
+            .map_err(DoorZmqError::Zmq)?;
+        for (door_id, telemetry) in state.doors() {
+            let frame = encode_selected(*door_id, *telemetry, state, timestamp)?;
+            socket
+                .send(&frame, zmq::DONTWAIT)
+                .map_err(DoorZmqError::Zmq)?;
+        }
+        Ok(())
     }
 
     /// Closes the socket and removes an IPC socket owned by this publisher.
@@ -116,42 +182,33 @@ impl Drop for DoorPublisher {
     }
 }
 
-/// `ZeroMQ` SUB socket retaining only the latest valid subscribed door state.
-pub struct DoorSubscriber {
+/// `ZeroMQ` SUB socket retaining only the latest valid aggregate state.
+pub struct AggregateDoorSubscriber {
     _context: zmq::Context,
     socket: zmq::Socket,
-    topic: String,
-    subscription: DoorSubscription,
-    latest: Option<DoorUpdate>,
+    latest: Option<ReceivedDoorsState>,
 }
 
-impl DoorSubscriber {
-    /// Connects to one exact aggregate or selected-door topic.
+impl AggregateDoorSubscriber {
+    /// Connects to the aggregate `doors.state` topic.
     ///
     /// # Errors
     ///
     /// Returns a `ZeroMQ` socket setup or connect failure.
-    pub fn connect(endpoint: &str, subscription: DoorSubscription) -> Result<Self, DoorZmqError> {
-        Self::connect_with_context(zmq::Context::new(), endpoint, subscription)
+    pub fn connect(endpoint: &str) -> Result<Self, DoorZmqError> {
+        Self::connect_with_context(zmq::Context::new(), endpoint)
     }
 
-    fn connect_with_context(
-        context: zmq::Context,
-        endpoint: &str,
-        subscription: DoorSubscription,
-    ) -> Result<Self, DoorZmqError> {
+    fn connect_with_context(context: zmq::Context, endpoint: &str) -> Result<Self, DoorZmqError> {
         let socket = context.socket(zmq::SUB).map_err(DoorZmqError::Zmq)?;
-        let topic = subscription.topic();
         socket
-            .set_subscribe(topic.as_bytes())
+            .set_subscribe(b"doors.state")
             .map_err(DoorZmqError::Zmq)?;
         socket.set_rcvhwm(10).map_err(DoorZmqError::Zmq)?;
         socket.connect(endpoint).map_err(DoorZmqError::Zmq)?;
         Ok(Self {
             _context: context,
             socket,
-            topic,
-            subscription,
             latest: None,
         })
     }
@@ -175,54 +232,161 @@ impl DoorSubscriber {
             let Some((topic, payload)) = frame.split_once(' ') else {
                 continue;
             };
-            if topic != self.topic {
+            if topic != "doors.state" {
                 continue;
             }
-            let update = match self.subscription {
-                DoorSubscription::Aggregate => serde_json::from_str::<AggregatePayload>(payload)
-                    .ok()
-                    .map(|message| DoorUpdate::Aggregate {
-                        all_closed: message.all_closed,
-                        stale: message.stale,
-                    }),
-                DoorSubscription::SelectedDoor(_) => {
-                    serde_json::from_str::<SelectedDoorPayload>(payload)
-                        .ok()
-                        .map(|message| DoorUpdate::SelectedDoor {
-                            state: message.state,
-                            stale: message.stale,
-                        })
-                }
-            };
-            if let Some(update) = update {
-                self.latest = Some(update);
+            if let Some(state) = decode_aggregate(payload) {
+                self.latest = Some(ReceivedDoorsState {
+                    state,
+                    received_at: Instant::now(),
+                });
             }
         }
     }
 
     /// Returns the latest valid update without applying any freshness policy.
     #[must_use]
-    pub const fn latest(&self) -> Option<DoorUpdate> {
-        self.latest
+    pub const fn latest(&self) -> Option<&ReceivedDoorsState> {
+        self.latest.as_ref()
     }
 }
 
 #[derive(Deserialize)]
 struct AggregatePayload {
+    seq: u64,
+    #[allow(dead_code)]
+    ts: f64,
+    doors: BTreeMap<String, TelemetryPayload>,
+    any_open: bool,
     all_closed: bool,
     stale: bool,
 }
 
 #[derive(Deserialize)]
-struct SelectedDoorPayload {
+struct TelemetryPayload {
     state: u8,
+    voltage: u16,
+}
+
+#[derive(Serialize)]
+struct AggregateWire {
+    seq: u64,
+    ts: f64,
+    doors: BTreeMap<String, TelemetryWire>,
+    any_open: bool,
+    all_closed: bool,
     stale: bool,
+}
+
+#[derive(Serialize)]
+struct SelectedWire {
+    seq: u64,
+    ts: f64,
+    door_id: u8,
+    state: u8,
+    voltage: u16,
+    stale: bool,
+}
+
+#[derive(Serialize)]
+struct TelemetryWire {
+    state: u8,
+    voltage: u16,
+}
+
+fn encode_aggregate(state: &DoorsState, timestamp: f64) -> Result<String, DoorZmqError> {
+    let doors = state
+        .doors()
+        .iter()
+        .map(|(door_id, telemetry)| {
+            (
+                door_id.get().to_string(),
+                TelemetryWire {
+                    state: telemetry.state.protocol_byte(),
+                    voltage: telemetry.voltage_raw,
+                },
+            )
+        })
+        .collect();
+    let payload = AggregateWire {
+        seq: state.sequence(),
+        ts: timestamp,
+        doors,
+        any_open: state.any_open(),
+        all_closed: state.all_closed(),
+        stale: state.stale(),
+    };
+    serde_json::to_string(&payload)
+        .map(|payload| format!("doors.state {payload}"))
+        .map_err(DoorZmqError::Json)
+}
+
+fn encode_selected(
+    door_id: DoorId,
+    telemetry: DoorTelemetry,
+    state: &DoorsState,
+    timestamp: f64,
+) -> Result<String, DoorZmqError> {
+    let payload = SelectedWire {
+        seq: state.sequence(),
+        ts: timestamp,
+        door_id: door_id.get(),
+        state: telemetry.state.protocol_byte(),
+        voltage: telemetry.voltage_raw,
+        stale: state.stale(),
+    };
+    serde_json::to_string(&payload)
+        .map(|payload| format!("door.{}.state {payload}", door_id.get()))
+        .map_err(DoorZmqError::Json)
+}
+
+fn decode_aggregate(payload: &str) -> Option<DoorsState> {
+    let payload = serde_json::from_str::<AggregatePayload>(payload).ok()?;
+    if !payload.ts.is_finite() {
+        return None;
+    }
+    let mut doors = BTreeMap::new();
+    for (raw_id, telemetry) in payload.doors {
+        let door_id = raw_id.parse::<u8>().ok().and_then(DoorId::new)?;
+        let state = DoorState::from_protocol_byte(telemetry.state)?;
+        if doors
+            .insert(
+                door_id,
+                DoorTelemetry {
+                    state,
+                    voltage_raw: telemetry.voltage,
+                },
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+    if !(3..=4).contains(&doors.len())
+        || !doors
+            .keys()
+            .copied()
+            .zip(1_u8..)
+            .all(|(door_id, expected)| door_id.get() == expected)
+    {
+        return None;
+    }
+    let state = DoorsState::new(payload.seq, doors, payload.stale);
+    (state.any_open() == payload.any_open && state.all_closed() == payload.all_closed)
+        .then_some(state)
+}
+
+fn epoch_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 /// Errors from `ZeroMQ` transport and IPC endpoint ownership.
 #[derive(Debug)]
 pub enum DoorZmqError {
     Zmq(zmq::Error),
+    Json(serde_json::Error),
     PublisherClosed,
     IpcPathNotAbsolute(PathBuf),
     IpcPathHasNoParent(PathBuf),
@@ -251,6 +415,7 @@ impl core::fmt::Display for DoorZmqError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Zmq(error) => write!(formatter, "ZeroMQ: {error}"),
+            Self::Json(error) => write!(formatter, "door JSON: {error}"),
             Self::PublisherClosed => formatter.write_str("door publisher is closed"),
             Self::IpcPathNotAbsolute(path) => {
                 write!(
@@ -307,6 +472,7 @@ impl std::error::Error for DoorZmqError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Zmq(error) => Some(error),
+            Self::Json(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::PublisherClosed
             | Self::IpcPathNotAbsolute(_)
@@ -384,9 +550,7 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        DoorPublisher, DoorSubscriber, DoorSubscription, DoorUpdate, prepare_ipc_endpoint,
-    };
+    use super::{AggregateDoorSubscriber, DoorPublisher, prepare_ipc_endpoint};
 
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -401,77 +565,34 @@ mod tests {
     }
 
     #[test]
-    fn subscriber_retains_latest_valid_selected_door_update() {
+    fn subscriber_retains_latest_valid_aggregate_state() {
         let endpoint = format!("inproc://pcrt-door-sub-test-{}", std::process::id());
         let context = zmq::Context::new();
         let publisher = context.socket(zmq::PUB).unwrap();
         publisher.bind(&endpoint).unwrap();
-        let mut subscriber = DoorSubscriber::connect_with_context(
-            context.clone(),
-            &endpoint,
-            DoorSubscription::SelectedDoor(2),
-        )
-        .unwrap();
+        let mut subscriber =
+            AggregateDoorSubscriber::connect_with_context(context.clone(), &endpoint).unwrap();
 
         thread::sleep(Duration::from_millis(50));
         publisher
-            .send(r#"door.1.state {"state":1,"stale":false}"#, 0)
+            .send(r#"doors.state {"seq":1,"ts":1.0,"doors":{"1":{"state":1,"voltage":42},"2":{"state":0,"voltage":7},"3":{"state":0,"voltage":8}},"any_open":true,"all_closed":false,"stale":false}"#, 0)
             .unwrap();
-        publisher.send("door.2.state {bad json}", 0).unwrap();
+        publisher.send("doors.state {bad json}", 0).unwrap();
         publisher
-            .send(r#"door.2.state {"state":1,"stale":false}"#, 0)
+            .send(r#"doors.state {"seq":2,"ts":1.0,"doors":{"1":{"state":0,"voltage":6},"2":{"state":0,"voltage":7},"3":{"state":0,"voltage":8}},"any_open":false,"all_closed":true,"stale":false}"#, 0)
             .unwrap();
         thread::sleep(Duration::from_millis(50));
         subscriber.drain().unwrap();
-        assert_eq!(
-            subscriber.latest(),
-            Some(DoorUpdate::SelectedDoor {
-                state: 1,
-                stale: false,
-            })
-        );
+        let latest = subscriber.latest().unwrap();
+        assert_eq!(latest.state().sequence(), 2);
+        assert!(latest.state().all_closed());
 
         publisher
-            .send(r#"door.2.state {"state":1,"stale":true}"#, 0)
+            .send(r#"doors.state {"seq":3,"ts":1.0,"doors":{"1":{"state":0,"voltage":6},"2":{"state":0,"voltage":7},"3":{"state":0,"voltage":8}},"any_open":true,"all_closed":true,"stale":true}"#, 0)
             .unwrap();
         thread::sleep(Duration::from_millis(50));
         subscriber.drain().unwrap();
-        assert_eq!(
-            subscriber.latest(),
-            Some(DoorUpdate::SelectedDoor {
-                state: 1,
-                stale: true,
-            })
-        );
-    }
-
-    #[test]
-    fn aggregate_subscriber_reads_processing_gate_fields() {
-        let endpoint = format!("inproc://pcrt-door-aggregate-test-{}", std::process::id());
-        let context = zmq::Context::new();
-        let publisher = context.socket(zmq::PUB).unwrap();
-        publisher.bind(&endpoint).unwrap();
-        let mut subscriber = DoorSubscriber::connect_with_context(
-            context.clone(),
-            &endpoint,
-            DoorSubscription::Aggregate,
-        )
-        .unwrap();
-
-        thread::sleep(Duration::from_millis(50));
-        publisher
-            .send(r#"doors.state {"all_closed":true,"stale":false}"#, 0)
-            .unwrap();
-        thread::sleep(Duration::from_millis(50));
-        subscriber.drain().unwrap();
-
-        assert_eq!(
-            subscriber.latest(),
-            Some(DoorUpdate::Aggregate {
-                all_closed: true,
-                stale: false,
-            })
-        );
+        assert_eq!(subscriber.latest().unwrap().state().sequence(), 2);
     }
 
     #[test]

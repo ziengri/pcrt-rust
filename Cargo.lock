@@ -927,22 +927,13 @@ name = "pcrt-config"
 version = "0.1.0"
 
 [[package]]
-name = "pcrt-door"
-version = "0.1.0"
-dependencies = [
- "pcrt-model",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "pcrt-door-gateway"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
  "glob",
- "pcrt-door",
  "pcrt-door-zmq",
+ "pcrt-model",
  "pcrt-service",
  "serde",
  "serde_json",
@@ -955,7 +946,7 @@ name = "pcrt-door-zmq"
 version = "0.1.0"
 dependencies = [
  "fs2",
- "pcrt-door",
+ "pcrt-model",
  "serde",
  "serde_json",
  "zmq",

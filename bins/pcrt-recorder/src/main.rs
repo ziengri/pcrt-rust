@@ -9,7 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use pcrt_door_zmq::{DoorSubscriber, DoorSubscription, DoorUpdate};
+use pcrt_door_zmq::AggregateDoorSubscriber;
+use pcrt_model::door::DoorId;
 use pcrt_recording::{
     lifecycle::RecordingLimits,
     recorder::{FfmpegEncoderFactory, Recorder, RecorderConfig},
@@ -81,11 +82,8 @@ fn run() -> Result<(), String> {
     let source = OpenCvVideoSource::open(&config.source).map_err(|error| error.to_string())?;
     let mut service = RecordingService::new(source, recorder, config.width, config.height)
         .map_err(|error| error.to_string())?;
-    let mut doors = DoorSubscriber::connect(
-        &config.endpoint,
-        DoorSubscription::SelectedDoor(config.door_channel),
-    )
-    .map_err(|error| error.to_string())?;
+    let mut doors =
+        AggregateDoorSubscriber::connect(&config.endpoint).map_err(|error| error.to_string())?;
     let started_at = Instant::now();
     log_event(
         "recorder_started",
@@ -104,13 +102,14 @@ fn run() -> Result<(), String> {
             break;
         }
         let _ = doors.drain();
-        let door_open = matches!(
-            doors.latest(),
-            Some(DoorUpdate::SelectedDoor {
-                state,
-                stale: false,
-            }) if state == config.door_open_value
-        );
+        let door_open = DoorId::new(config.door_channel).is_some_and(|door_id| {
+            doors.latest().is_some_and(|received| {
+                !received.state().stale()
+                    && received.state().door(door_id).is_some_and(|telemetry| {
+                        telemetry.state.protocol_byte() == config.door_open_value
+                    })
+            })
+        });
         match service
             .step(door_open, now_ms())
             .map_err(|error| error.to_string())?
