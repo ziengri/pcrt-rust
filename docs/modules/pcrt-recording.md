@@ -13,13 +13,22 @@ defaults < config.env < recorder-camN.env < environment < CLI
 ```
 
 Required keys are `SOURCE`, `CAMERA_ID` and `DOOR_CHANNEL`. Existing keys retain
-their meanings: `SESSIONS_DIR`, `ZMQ_IPC_ENDPOINT`, `DOOR_OPEN_VALUE`, `WIDTH`,
+their meanings: `SESSIONS_DIR`, `ZMQ_IPC_ENDPOINT`, `DOOR_STATE_TTL_SEC`, `WIDTH`,
 `HEIGHT`, `FPS`, `MAX_SESSION_SECONDS` and `IDLE_SLEEP`.
 
-The recorder subscribes only to `door.<DOOR_CHANNEL>.state`. It consumes the latest
-valid message, treats missing or `stale: true` as closed, and treats
-`state == DOOR_OPEN_VALUE` as open. The ZeroMQ wire frame remains
-`<topic><space><compact JSON>`.
+The recorder subscribes to aggregate `doors.state`, then selects its configured
+`DoorId` locally. It fails closed when the aggregate is missing, stale, lacks the
+selected door, arrives after `DOOR_STATE_TTL_SEC`, or reports the selected door as
+closed. Subscriber receive errors also fail closed. Wire frames remain
+`<topic><space><compact JSON>`; protocol-byte comparison is confined to the shared
+door transport codec.
+
+## Boundaries
+
+`pcrt-recording` is the reusable core: its deterministic lifecycle FSM, storage-backed
+orchestration and generic encoder traits do not depend on OpenCV, ffmpeg or ZeroMQ.
+The `pcrt-recorder` binary privately owns the configured door gate, OpenCV source and
+resize adapter, ffmpeg implementation, runtime loop, shutdown and logging policy.
 
 ## Recording lifecycle
 
@@ -49,10 +58,10 @@ state. Encoder failure never publishes a ready session.
 
 ## Video encoder
 
-`OpenCvVideoSource` uses `VideoCapture` for numeric cameras, local files and RTSP
+The recorder-private `OpenCvVideoSource` uses `VideoCapture` for numeric cameras, local files and RTSP
 URLs. Network URLs use the OpenCV FFmpeg backend with a two-second open/read timeout,
-so a stalled RTSP read cannot block service shutdown indefinitely. `RecordingService`
-owns normalized door state and reads one frame each iteration,
+so a stalled RTSP read cannot block service shutdown indefinitely. The recorder-private
+`RecordingService` receives normalized door state and reads one frame each iteration,
 requires `CV_8UC3` BGR input,
 and, only while the door is open, resizes with `INTER_LINEAR` to configured `WIDTH x
 HEIGHT`, then supplies exact `bgr24` raw bytes to `ffmpeg`. Closed/stale door state
@@ -88,7 +97,7 @@ and the start timestamp.
 
 ## Implementation order
 
-1. `pcrt-recording` lifecycle FSM, OpenCV source/resize loop, ffmpeg encoder and storage orchestration.
-2. `pcrt-recorder` config and `pcrt-storage` startup recovery wiring.
-3. `pcrt-recorder` ZeroMQ door-state adapter and one-camera shadow run.
+1. Keep `pcrt-recording` lifecycle FSM and storage orchestration reusable.
+2. Keep OpenCV, ffmpeg, config, door gate and runtime private to `pcrt-recorder`.
+3. Run a one-camera shadow deployment with aggregate door-state gating.
 4. Harden ffmpeg supervision with process-group termination.

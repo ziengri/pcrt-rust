@@ -48,12 +48,6 @@ impl VideoFrame {
         Self(mat)
     }
 
-    /// Returns the underlying `OpenCV` BGR matrix for resize and encoder adapters.
-    #[must_use]
-    pub const fn mat(&self) -> &Mat {
-        &self.0
-    }
-
     /// Transfers ownership of the `OpenCV` matrix to a frame processing adapter.
     #[must_use]
     pub(crate) fn into_mat(self) -> Mat {
@@ -95,12 +89,6 @@ impl OpenCvVideoSource {
     #[must_use]
     pub const fn exhausted(&self) -> bool {
         self.exhausted
-    }
-
-    /// Returns whether the source is a local regular file.
-    #[must_use]
-    pub const fn is_file(&self) -> bool {
-        self.is_file
     }
 
     /// Returns the next BGR frame or `None` when no frame is available.

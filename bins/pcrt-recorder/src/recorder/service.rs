@@ -6,10 +6,9 @@ use opencv::{
     prelude::{MatTraitConst, MatTraitConstManual},
 };
 
-use crate::{
-    recorder::{EncoderFactory, Recorder, RecorderError},
-    video::{OpenCvVideoSource, VideoFrame, VideoSourceError},
-};
+use pcrt_recording::recorder::{EncoderFactory, Recorder, RecorderError};
+
+use super::source::{OpenCvVideoSource, VideoFrame, VideoSourceError};
 
 /// Result of one camera read and recorder iteration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,7 +184,7 @@ fn target_size(width: u32, height: u32) -> Result<Size, RecordingServiceError> {
 mod tests {
     use opencv::core::{self, Mat, Scalar};
 
-    use crate::video::VideoFrame;
+    use super::super::source::VideoFrame;
 
     use super::{RecordingServiceError, resize_bgr24};
 
@@ -217,13 +216,15 @@ mod tests {
         use pcrt_storage::SessionStorage;
         use tempfile::tempdir;
 
-        use crate::{
+        use pcrt_recording::{
             lifecycle::RecordingLimits,
-            recorder::{FfmpegEncoderFactory, Recorder, RecorderConfig},
-            video::OpenCvVideoSource,
+            recorder::{Recorder, RecorderConfig},
         };
 
-        use super::{RecordingService, RecordingServiceStep};
+        use super::{
+            super::{FfmpegEncoderFactory, OpenCvVideoSource},
+            RecordingService, RecordingServiceStep,
+        };
 
         let source = env::var("PCRT_RECORDING_SMOKE_SOURCE")
             .expect("PCRT_RECORDING_SMOKE_SOURCE must name a local video file");

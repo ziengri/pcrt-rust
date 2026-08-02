@@ -38,7 +38,7 @@ rust/
     pcrt-result-queue/# SQLite-очередь готовых результатов для uploader
     pcrt-api-client/  # HTTP-клиент API пассажиропотока, auth, DTO и ответы
     pcrt-door-zmq/    # shared DoorsState, ZeroMQ PUB/SUB и IPC ownership
-    pcrt-recording/   # камера, ffmpeg и recorder FSM
+    pcrt-recording/   # reusable recorder FSM, storage orchestration и encoder traits
     pcrt-processing/  # очередь, линии подсчёта, InferenceBackend
     pcrt-monitoring/  # probes, journal, transition rules
   bins/
@@ -81,6 +81,8 @@ pcrt-door-zmq   <- pcrt-door-gateway / pcrt-recorder / pcrt-processor
   но не знает RS-232 protocol, serial lifecycle или consumer policy.
 - `pcrt-door-gateway` владеет private controller decoder/FSM и serial lifecycle;
   recorder и processor получают только shared door-bus state.
+- `pcrt-recorder` владеет private door gate, OpenCV/ffmpeg adapters и runtime policy;
+  `pcrt-recording` не зависит от OpenCV, ffmpeg или ZeroMQ.
 - `pcrt-storage` владеет только файловыми сессиями и не обращается к SQLite.
 - `pcrt-result-queue` владеет SQLite, схемой очереди, миграциями и состоянием строк.
 - Только `pcrt-result-queue` создаёт, выдаёт, удаляет и переносит в DLQ сообщения

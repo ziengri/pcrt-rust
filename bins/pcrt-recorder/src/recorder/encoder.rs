@@ -9,14 +9,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::lifecycle::{VIDEO_CODEC, X264_CRF, X264_PRESET};
+use pcrt_recording::{
+    lifecycle::{VIDEO_CODEC, X264_CRF, X264_PRESET},
+    recorder::{EncoderFactory, FrameEncoder},
+};
 
 /// How long `finish` or `abort` waits before killing an unresponsive ffmpeg child.
-pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Validated raw-frame encoding parameters for one output video.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FfmpegConfig {
+struct FfmpegConfig {
     program: PathBuf,
     output: PathBuf,
     width: u32,
@@ -86,18 +89,6 @@ impl FfmpegConfig {
         Ok(config)
     }
 
-    /// Returns output image width.
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Returns output image height.
-    #[must_use]
-    pub const fn height(&self) -> u32 {
-        self.height
-    }
-
     /// Returns expected raw BGR24 byte count for one resized frame.
     ///
     /// # Errors
@@ -147,7 +138,7 @@ impl FfmpegConfig {
 
 /// Error produced while configuring, running or closing ffmpeg.
 #[derive(Debug)]
-pub enum FfmpegError {
+enum FfmpegError {
     /// A video dimension is zero.
     ZeroDimensions,
     /// Frame rate is zero.
@@ -198,11 +189,45 @@ impl From<io::Error> for FfmpegError {
 
 /// Running ffmpeg encoder for one capture session.
 #[derive(Debug)]
-pub struct FfmpegEncoder {
+struct FfmpegEncoder {
     config: FfmpegConfig,
     child: Child,
     stdin: Option<ChildStdin>,
     frame_count: u64,
+}
+
+/// Production factory for the fixed `libx264` ffmpeg encoder.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FfmpegEncoderFactory;
+
+impl EncoderFactory for FfmpegEncoderFactory {
+    fn start(
+        &self,
+        output: &std::path::Path,
+        width: u32,
+        height: u32,
+        frames_per_second: u32,
+    ) -> Result<Box<dyn FrameEncoder>, String> {
+        let config = FfmpegConfig::new(output, width, height, frames_per_second)
+            .map_err(|error| error.to_string())?;
+        FfmpegEncoder::start(config)
+            .map(|encoder| Box::new(encoder) as Box<dyn FrameEncoder>)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl FrameEncoder for FfmpegEncoder {
+    fn write_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        self.write_frame(frame).map_err(|error| error.to_string())
+    }
+
+    fn finish(self: Box<Self>) -> Result<u64, String> {
+        (*self).finish().map_err(|error| error.to_string())
+    }
+
+    fn abort(self: Box<Self>) -> Result<(), String> {
+        (*self).abort().map_err(|error| error.to_string())
+    }
 }
 
 impl FfmpegEncoder {
@@ -253,12 +278,6 @@ impl FfmpegEncoder {
         stdin.write_all(frame)?;
         self.frame_count = self.frame_count.saturating_add(1);
         Ok(())
-    }
-
-    /// Returns the successfully accepted input frame count.
-    #[must_use]
-    pub const fn frame_count(&self) -> u64 {
-        self.frame_count
     }
 
     /// Closes input and waits for a successful ffmpeg exit.
@@ -337,7 +356,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{FfmpegConfig, FfmpegEncoder, FfmpegError, VIDEO_CODEC, X264_CRF, X264_PRESET};
-    use crate::lifecycle::VIDEO_FORMAT;
+    use pcrt_recording::lifecycle::VIDEO_FORMAT;
 
     #[test]
     fn builds_fixed_h264_matroska_command() {

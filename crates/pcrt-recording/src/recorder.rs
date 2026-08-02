@@ -4,9 +4,8 @@ use std::path::Path;
 
 use pcrt_storage::{CaptureMetadata, CaptureSession, CapturedVideo, SessionStorage, StorageError};
 
-use crate::{
-    ffmpeg::{FfmpegConfig, FfmpegEncoder},
-    lifecycle::{RecordingAction, RecordingLifecycle, RecordingLimits, VIDEO_CODEC, VIDEO_FORMAT},
+use crate::lifecycle::{
+    RecordingAction, RecordingLifecycle, RecordingLimits, VIDEO_CODEC, VIDEO_FORMAT,
 };
 
 /// Starts an encoder for one capture output path.
@@ -47,40 +46,6 @@ pub trait FrameEncoder {
     ///
     /// Returns a descriptive error if the encoder cannot be stopped.
     fn abort(self: Box<Self>) -> Result<(), String>;
-}
-
-/// Production factory for the fixed `libx264` ffmpeg encoder.
-#[derive(Clone, Debug, Default)]
-pub struct FfmpegEncoderFactory;
-
-impl EncoderFactory for FfmpegEncoderFactory {
-    fn start(
-        &self,
-        output: &Path,
-        width: u32,
-        height: u32,
-        frames_per_second: u32,
-    ) -> Result<Box<dyn FrameEncoder>, String> {
-        let config = FfmpegConfig::new(output, width, height, frames_per_second)
-            .map_err(|error| error.to_string())?;
-        FfmpegEncoder::start(config)
-            .map(|encoder| Box::new(encoder) as Box<dyn FrameEncoder>)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl FrameEncoder for FfmpegEncoder {
-    fn write_frame(&mut self, frame: &[u8]) -> Result<(), String> {
-        self.write_frame(frame).map_err(|error| error.to_string())
-    }
-
-    fn finish(self: Box<Self>) -> Result<u64, String> {
-        (*self).finish().map_err(|error| error.to_string())
-    }
-
-    fn abort(self: Box<Self>) -> Result<(), String> {
-        (*self).abort().map_err(|error| error.to_string())
-    }
 }
 
 /// Static configuration for a one-camera recorder process.

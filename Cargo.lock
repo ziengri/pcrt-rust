@@ -972,7 +972,9 @@ name = "pcrt-recorder"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
+ "opencv",
  "pcrt-door-zmq",
+ "pcrt-model",
  "pcrt-recording",
  "pcrt-service",
  "pcrt-storage",
@@ -983,7 +985,6 @@ dependencies = [
 name = "pcrt-recording"
 version = "0.1.0"
 dependencies = [
- "opencv",
  "pcrt-storage",
  "tempfile",
 ]

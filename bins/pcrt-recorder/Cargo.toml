@@ -6,20 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-opencv-source = ["pcrt-recording/opencv-source"]
-
 [[bin]]
 name = "pcrt-recorder"
 path = "src/main.rs"
-required-features = ["opencv-source"]
 
 [dependencies]
 pcrt-recording = { path = "../../crates/pcrt-recording" }
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
+pcrt-model = { path = "../../crates/pcrt-model" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-storage = { path = "../../crates/pcrt-storage" }
 ctrlc = "3.5.2"
+opencv = { version = "0.98", default-features = false, features = ["imgproc", "videoio"] }
 
 [dev-dependencies]
 tempfile = "3"
