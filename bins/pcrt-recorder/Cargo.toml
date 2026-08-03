@@ -17,6 +17,7 @@ pcrt-model = { path = "../../crates/pcrt-model" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-storage = { path = "../../crates/pcrt-storage" }
 ctrlc = "3.5.2"
+nix = { version = "0.31.3", features = ["fs", "poll"] }
 opencv = { version = "0.98", default-features = false, features = ["imgproc", "videoio"] }
 
 [dev-dependencies]

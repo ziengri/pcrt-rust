@@ -36,7 +36,7 @@ pub(crate) fn run(config: &RuntimeConfig) -> Result<(), String> {
     );
     let recorder = Recorder::new(
         storage,
-        FfmpegEncoderFactory,
+        FfmpegEncoderFactory::new(shutdown.clone()),
         RecorderConfig {
             camera_id: config.camera_id.clone(),
             source_id: config.source.clone(),
@@ -82,10 +82,18 @@ pub(crate) fn run(config: &RuntimeConfig) -> Result<(), String> {
                 false
             }
         };
-        match service
-            .step(door_open, now_ms())
-            .map_err(|error| error.to_string())?
-        {
+        let step = match service.step(door_open, now_ms()) {
+            Ok(step) => step,
+            Err(error) if shutdown.is_shutdown_requested() => {
+                log_event(
+                    "recorder_frame_write_interrupted",
+                    &[("error", &error.to_string())],
+                );
+                break;
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        match step {
             RecordingServiceStep::FileRestarted => log_event("source_file_restarted", &[]),
             RecordingServiceStep::NoFrame => thread::sleep(config.idle_sleep),
             RecordingServiceStep::FrameHandled | RecordingServiceStep::FrameDiscardedDoorClosed => {

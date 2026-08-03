@@ -972,6 +972,7 @@ name = "pcrt-recorder"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
+ "nix 0.31.3",
  "opencv",
  "pcrt-door-zmq",
  "pcrt-model",

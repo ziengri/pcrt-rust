@@ -77,8 +77,10 @@ ffmpeg -hide_banner -loglevel error -y \
 
 `libx264`, `fast` and CRF `18` are intentional migration changes from Python
 `ffv1`. Published storage metadata records `codec: "libx264"` and `format: "mkv"`.
-The adapter uses bounded close and child-kill/reap steps so systemd shutdown cannot
-leave an ffmpeg child behind. Process-group termination remains a future hardening step.
+The adapter writes each frame through a non-blocking pipe with a two-second deadline
+and checks shutdown at most every 25 milliseconds. A stalled encoder is killed/reaped
+without publishing its capture. Normal close retains a ten-second bounded ffmpeg exit
+wait. Process-group termination remains a future hardening step.
 
 ## Storage
 

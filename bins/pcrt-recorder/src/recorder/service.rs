@@ -232,7 +232,7 @@ mod tests {
         let storage = SessionStorage::open(directory.path()).unwrap();
         let recorder = Recorder::new(
             storage,
-            FfmpegEncoderFactory,
+            FfmpegEncoderFactory::new(pcrt_service::ShutdownToken::default()),
             RecorderConfig {
                 camera_id: "cam1".to_owned(),
                 source_id: source.clone(),
