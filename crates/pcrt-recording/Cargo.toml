@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+opencv-source = ["dep:opencv"]
+
 [dependencies]
+opencv = { version = "0.98", default-features = false, features = ["imgproc", "videoio"], optional = true }
 pcrt-storage = { path = "../pcrt-storage" }
 
 [dev-dependencies]

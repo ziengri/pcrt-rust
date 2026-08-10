@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
-//! Reusable door-gated recording lifecycle and storage orchestration.
+//! Door-gated recording lifecycle and video source adapters.
 
+pub mod ffmpeg;
 pub mod lifecycle;
 pub mod recorder;
+#[cfg(feature = "opencv-source")]
+pub mod service;
+#[cfg(feature = "opencv-source")]
+pub mod video;

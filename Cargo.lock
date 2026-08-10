@@ -927,13 +927,22 @@ name = "pcrt-config"
 version = "0.1.0"
 
 [[package]]
+name = "pcrt-door"
+version = "0.1.0"
+dependencies = [
+ "pcrt-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pcrt-door-gateway"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
  "glob",
+ "pcrt-door",
  "pcrt-door-zmq",
- "pcrt-model",
  "pcrt-service",
  "serde",
  "serde_json",
@@ -946,7 +955,7 @@ name = "pcrt-door-zmq"
 version = "0.1.0"
 dependencies = [
  "fs2",
- "pcrt-model",
+ "pcrt-door",
  "serde",
  "serde_json",
  "zmq",
@@ -968,14 +977,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcrt-processor"
+version = "0.1.0"
+dependencies = [
+ "ctrlc",
+ "fs2",
+ "pcrt-door-zmq",
+ "pcrt-processing",
+ "pcrt-result-queue",
+ "pcrt-service",
+ "pcrt-storage",
+ "tempfile",
+]
+
+[[package]]
 name = "pcrt-recorder"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
- "nix 0.31.3",
- "opencv",
  "pcrt-door-zmq",
- "pcrt-model",
  "pcrt-recording",
  "pcrt-service",
  "pcrt-storage",
@@ -986,6 +1006,7 @@ dependencies = [
 name = "pcrt-recording"
 version = "0.1.0"
 dependencies = [
+ "opencv",
  "pcrt-storage",
  "tempfile",
 ]

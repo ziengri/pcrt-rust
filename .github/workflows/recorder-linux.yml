@@ -7,7 +7,6 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "bins/pcrt-recorder/**"
-      - "crates/pcrt-door-zmq/**"
       - "crates/pcrt-model/**"
       - "crates/pcrt-recording/**"
       - "crates/pcrt-service/**"
@@ -43,13 +42,13 @@ jobs:
           components: clippy
 
       - name: Test recorder
-        run: cargo test -p pcrt-recorder
+        run: cargo test -p pcrt-recorder --features opencv-source
 
       - name: Lint native recorder
-        run: cargo clippy -p pcrt-recorder --all-targets -- -D warnings
+        run: cargo clippy -p pcrt-recorder --all-targets --features opencv-source -- -D warnings
 
       - name: Build release recorder
-        run: cargo build --release -p pcrt-recorder
+        run: cargo build --release -p pcrt-recorder --features opencv-source
 
       - name: Collect deployable artifact
         run: |

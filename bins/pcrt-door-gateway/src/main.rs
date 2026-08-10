@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 //! RS-232 door gateway composition entrypoint.
 
+mod application;
 mod config;
-mod door;
+mod infrastructure;
 mod runtime;
 
 use std::{env, process};

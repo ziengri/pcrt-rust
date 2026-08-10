@@ -2,6 +2,7 @@
 members = [
     "crates/pcrt-config",
     "crates/pcrt-api-client",
+    "crates/pcrt-door",
     "crates/pcrt-door-zmq",
     "crates/pcrt-model",
     "crates/pcrt-processing",
@@ -11,6 +12,7 @@ members = [
     "crates/pcrt-storage",
     "crates/pcrt-uploader",
     "bins/pcrt-door-gateway",
+    "bins/pcrt-processor",
     "bins/pcrt-recorder",
 ]
 resolver = "3"

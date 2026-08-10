@@ -2,15 +2,17 @@
 
 use std::{
     io::{self, Read},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use pcrt_door_zmq::{DoorPublisher, DoorsState};
+use pcrt_door::{DoorProtocol, DoorSnapshot, encode_snapshot};
+use pcrt_door_zmq::DoorPublisher;
 use pcrt_service::ShutdownToken;
 
 use crate::{
+    application::{GatewayEngine, GatewayHealth, GatewayOutput},
     config::GatewayConfig,
-    door::{ByteSource, DoorProtocol, DoorService, GatewayEffect, GatewayHealth, open_source},
+    infrastructure::serial::{ByteSource, open_source},
 };
 
 const READ_BUFFER_SIZE: usize = 4096;
@@ -27,7 +29,7 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
     let publisher = DoorPublisher::bind(&config.endpoint).map_err(|error| error.to_string())?;
     log_event("publisher_bound", &[("endpoint", &config.endpoint)]);
     let started_at = Instant::now();
-    let mut engine = DoorService::new(
+    let mut engine = GatewayEngine::new(
         protocol,
         config.stale_timeout,
         config.serial_liveness_timeout,
@@ -37,8 +39,8 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
     let mut source = None;
     let mut buffer = [0_u8; READ_BUFFER_SIZE];
 
-    let initial_state = engine.snapshot().clone();
-    publish_state(&publisher, &initial_state, &mut engine);
+    let initial_snapshot = engine.snapshot().clone();
+    publish_snapshot(&publisher, &initial_snapshot, &mut engine);
     while !shutdown.is_shutdown_requested() {
         let now = Instant::now();
         if config
@@ -85,7 +87,7 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
         }
         let tick_at = Instant::now();
         for output in engine.tick(tick_at, config.heartbeat_interval) {
-            if matches!(output, GatewayEffect::DisconnectForLiveness) {
+            if matches!(output, GatewayOutput::DisconnectForLiveness) {
                 source.take();
             }
             handle_gateway_output(&publisher, output, &mut engine, tick_at);
@@ -99,16 +101,30 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn publish_state(publisher: &DoorPublisher, state: &DoorsState, engine: &mut DoorService) {
-    if let Err(error) = publisher.publish(state) {
-        engine.record_publish_failure();
-        log_event("publish_failed", &[("error", &error.to_string())]);
+fn publish_snapshot(
+    publisher: &DoorPublisher,
+    snapshot: &DoorSnapshot,
+    engine: &mut GatewayEngine,
+) {
+    match encode_snapshot(snapshot, epoch_seconds()) {
+        Ok(messages) => {
+            for message in &messages {
+                if let Err(error) = publisher.publish(message) {
+                    engine.record_publish_failure();
+                    log_event("publish_failed", &[("error", &error.to_string())]);
+                }
+            }
+        }
+        Err(error) => {
+            engine.record_publish_failure();
+            log_event("encode_failed", &[("error", &error.to_string())]);
+        }
     }
 }
 
 fn disconnect_source(
     source: &mut Option<ByteSource>,
-    engine: &mut DoorService,
+    engine: &mut GatewayEngine,
     now: Instant,
     reason: &str,
 ) {
@@ -119,28 +135,28 @@ fn disconnect_source(
 
 fn handle_gateway_output(
     publisher: &DoorPublisher,
-    output: GatewayEffect,
-    engine: &mut DoorService,
+    output: GatewayOutput,
+    engine: &mut GatewayEngine,
     now: Instant,
 ) {
     match output {
-        GatewayEffect::Publish(state) => publish_state(publisher, &state, engine),
-        GatewayEffect::PacketRejected(error) => {
+        GatewayOutput::Publish(snapshot) => publish_snapshot(publisher, &snapshot, engine),
+        GatewayOutput::PacketRejected(error) => {
             log_event("packet_rejected", &[("error", &error.to_string())]);
         }
-        GatewayEffect::PacketTruncated => log_event("packet_truncated", &[]),
-        GatewayEffect::DecoderOverflow => log_event("decoder_overflow", &[]),
-        GatewayEffect::DisconnectForLiveness => {
+        GatewayOutput::PacketTruncated => log_event("packet_truncated", &[]),
+        GatewayOutput::DecoderOverflow => log_event("decoder_overflow", &[]),
+        GatewayOutput::DisconnectForLiveness => {
             log_event("source_disconnected", &[("reason", "liveness_timeout")]);
         }
-        GatewayEffect::Heartbeat(state) => {
-            publish_state(publisher, &state, engine);
-            log_health(engine.health(), &state, now);
+        GatewayOutput::Heartbeat(snapshot) => {
+            publish_snapshot(publisher, &snapshot, engine);
+            log_health(engine.health(), &snapshot, now);
         }
     }
 }
 
-fn log_health(health: &GatewayHealth, state: &DoorsState, now: Instant) {
+fn log_health(health: &GatewayHealth, snapshot: &DoorSnapshot, now: Instant) {
     let packet_age_ms = health.last_valid_packet.map_or_else(
         || "unknown".to_owned(),
         |instant| now.duration_since(instant).as_millis().to_string(),
@@ -152,8 +168,8 @@ fn log_health(health: &GatewayHealth, state: &DoorsState, now: Instant) {
                 "serial_connected",
                 if health.connected { "true" } else { "false" },
             ),
-            ("stale", if state.stale() { "true" } else { "false" }),
-            ("seq", &state.sequence().to_string()),
+            ("stale", if snapshot.is_stale() { "true" } else { "false" }),
+            ("seq", &snapshot.sequence().to_string()),
             ("last_valid_age_ms", &packet_age_ms),
             ("valid_packets", &health.valid_packets.to_string()),
             ("rejected_packets", &health.rejected_packets.to_string()),
@@ -168,6 +184,12 @@ fn log_health(health: &GatewayHealth, state: &DoorsState, now: Instant) {
 fn install_shutdown_handler(token: ShutdownToken) -> Result<(), String> {
     ctrlc::set_handler(move || token.request_shutdown())
         .map_err(|error| format!("install shutdown handler: {error}"))
+}
+
+fn epoch_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 fn log_event(event: &str, fields: &[(&str, &str)]) {

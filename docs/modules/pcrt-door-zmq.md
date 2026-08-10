@@ -48,9 +48,9 @@ DoorTelemetry` и `stale`. `any_open` и `all_closed` являются derived m
 JSON `any_open` и `all_closed` сохраняются для wire compatibility, но при decode
 сверяются с вычислением из `DoorsState`; contradictory message отклоняется.
 
-## Public API
+## Target API
 
-Публичный API не передаёт consumers технические frame/JSON DTO:
+Целевой публичный API не передаёт consumers технические frame/JSON DTO:
 
 ```rust
 pub struct DoorsState { /* sequence, complete doors, stale */ }

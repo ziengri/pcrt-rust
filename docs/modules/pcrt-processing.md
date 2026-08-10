@@ -24,8 +24,13 @@ AND stale == false
 AND all_closed == true
 ```
 
-Paused processor не claim-ит ready session. Конкретный ZeroMQ subscriber будет
-добавлен в `pcrt-processor` binary отдельным этапом.
+Paused processor не claim-ит ready session. `pcrt-processor` binary владеет
+aggregate ZeroMQ subscriber, local receive TTL и exclusive lock для одного
+`SESSIONS_DIR`. Door gate вычисляется непосредственно перед `process_one`.
+После успешного claim backend получает только `ClaimedSession` и
+`ShutdownToken`: изменение `all_closed` или переход door state в `stale` не
+отменяет уже начатую processing session. Только service shutdown может
+отменить inference и вернуть claim в `ready`.
 
 ## Durable protocol
 
@@ -59,8 +64,31 @@ processor ownership:
 Наличие queue row проверяется повторно после каждого claim. Если результат уже
 существует, video удаляется и AI не запускается.
 
-## Следующий этап
+## Binary
 
-Следующий slice добавит reusable aggregate door subscriber, exclusive process
-lock и `pcrt-processor` binary. Native decode/OpenVINO backend подключается только
-после fixture baseline и shadow comparison с Python implementation.
+```text
+bins/pcrt-processor/src/
+|-- config.rs          # typed env/CLI configuration
+|-- runtime.rs         # lock, recovery, subscriber loop and shutdown
+`-- processor/
+    |-- gate.rs        # all-closed admission policy for a new claim only
+    `-- lock.rs        # exclusive sessions-root ownership
+```
+
+The binary does not start a placeholder AI backend: doing so could claim and
+incorrectly fail production sessions. Native decode/OpenVINO is added only
+after fixture baseline and shadow comparison with the Python implementation;
+then it is injected into the existing generic runtime as `InferenceBackend`.
+
+## Configuration
+
+`pcrt-processor` uses the same precedence as the other Rust binaries:
+defaults, `config.env`, `processor.env`, environment and CLI.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `SESSIONS_DIR` | `sessions` | Root owned by recorder/processor lifecycle. |
+| `RESULT_QUEUE_DB` | `$SESSIONS_DIR/outbox/results.sqlite` | Durable uploader queue. |
+| `ZMQ_IPC_ENDPOINT` | `ipc:///run/doors.sock` | Aggregate `doors.state` subscriber endpoint. |
+| `DOOR_STATE_TTL_SEC` | `2` | Maximum local age of a valid aggregate state before new claims pause. |
+| `IDLE_SLEEP` | `0.1` | Sleep while paused or no ready sessions exist. |

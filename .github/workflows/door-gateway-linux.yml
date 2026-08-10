@@ -7,9 +7,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "bins/pcrt-door-gateway/**"
-      - "crates/pcrt-door-zmq/**"
+      - "crates/pcrt-door/**"
       - "crates/pcrt-model/**"
-      - "crates/pcrt-service/**"
       - ".github/workflows/door-gateway-linux.yml"
 
 permissions:

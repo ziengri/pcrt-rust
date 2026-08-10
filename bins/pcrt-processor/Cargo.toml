@@ -1,28 +1,22 @@
 [package]
-name = "pcrt-recorder"
+name = "pcrt-processor"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-opencv-source = ["pcrt-recording/opencv-source"]
-
-[[bin]]
-name = "pcrt-recorder"
-path = "src/main.rs"
-required-features = ["opencv-source"]
-
 [dependencies]
-pcrt-recording = { path = "../../crates/pcrt-recording" }
+ctrlc = "3.5.2"
+fs2 = "0.4.3"
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
+pcrt-processing = { path = "../../crates/pcrt-processing" }
+pcrt-result-queue = { path = "../../crates/pcrt-result-queue" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-storage = { path = "../../crates/pcrt-storage" }
-ctrlc = "3.5.2"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.23.0"
 
 [lints]
 workspace = true
