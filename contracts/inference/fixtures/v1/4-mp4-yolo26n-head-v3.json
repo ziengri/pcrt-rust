@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "fixture_id": "4-mp4-yolo26n-head-v3",
+  "reference_implementation": "python-session-ai-runner",
+  "inputs": {
+    "video": {
+      "path": "../../../../../4.mp4",
+      "sha256": "485895a795c4a23e140312c7064863194fcfa4a737d3ff5f26540ccc5cee291e",
+      "width": 320,
+      "height": 320,
+      "fps": 25.0,
+      "frame_count": 6123
+    },
+    "model": {
+      "xml_path": "../../../../../models/yolo26n-head-v3_int8_openvino_model/yolo26n-head-v3.xml",
+      "xml_sha256": "ca1a8bab8c8ceb081db656d0ea36f5129e419e691cf3980f6d49c44de44f7d8e",
+      "bin_sha256": "f792fdaa3751899b353e25a2f94834ecf9d321237fdd19b9e2fe7925112e1cd7"
+    }
+  },
+  "parameters": {
+    "device": "CPU",
+    "confidence": 0.45,
+    "skip_frames": 2,
+    "nms_topk": 200,
+    "distance_threshold": 0.4,
+    "hit_counter_max": 0,
+    "initialization_delay": 1,
+    "target_width": 256,
+    "line_y_ratio": 0.33
+  },
+  "expected": {
+    "entered": 13,
+    "exited": 45
+  }
+}

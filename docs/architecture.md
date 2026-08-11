@@ -37,6 +37,7 @@ rust/
     pcrt-storage/     # manifest, атомарный session-dir и recovery видео
     pcrt-result-queue/# SQLite-очередь готовых результатов для uploader
     pcrt-api-client/  # HTTP-клиент API пассажиропотока, auth, DTO и ответы
+    pcrt-uploader/    # queue delivery state machine, retry and jitter
     pcrt-door/        # RS-232 parser/FSM и ZeroMQ publisher/subscriber
     pcrt-recording/   # камера, ffmpeg и recorder FSM
     pcrt-processing/  # очередь, линии подсчёта, InferenceBackend
@@ -59,8 +60,9 @@ rust/
 ```
 
 Сейчас созданы `pcrt-model`, `pcrt-config`, `pcrt-service`, `pcrt-storage`,
-`pcrt-result-queue`, `pcrt-api-client` и `pcrt-uploader`. Остальные crate
-добавляются вместе с первым работающим потребителем, а не заранее пустыми.
+`pcrt-result-queue`, `pcrt-api-client` и `pcrt-uploader-core`; runtime
+compositions находятся в `bins/`. Остальные crate добавляются вместе с первым
+работающим потребителем, а не заранее пустыми.
 
 ## Правила зависимостей
 

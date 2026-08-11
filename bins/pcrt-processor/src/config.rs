@@ -4,6 +4,10 @@ use std::{collections::BTreeMap, env, fs, path::PathBuf, time::Duration};
 
 const DEFAULT_SESSIONS_DIR: &str = "sessions";
 const DEFAULT_ENDPOINT: &str = "ipc:///run/doors.sock";
+const DEFAULT_DEVICE_ENV: &str = "/etc/pcrt/device.env";
+const MODEL_INPUT_SIZE: usize = 256;
+const MAX_INFERENCE_STREAMS: usize = 16;
+const MAX_SKIP_FRAMES: usize = 1_000;
 
 #[derive(Debug)]
 pub(crate) struct ProcessorConfig {
@@ -13,6 +17,22 @@ pub(crate) struct ProcessorConfig {
     pub(crate) door_state_ttl: Duration,
     pub(crate) idle_sleep: Duration,
     pub(crate) exit_after: Option<Duration>,
+    pub(crate) bus_id: String,
+    pub(crate) inference: InferenceConfig,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InferenceConfig {
+    pub(crate) model_path: PathBuf,
+    pub(crate) streams: usize,
+    pub(crate) confidence: f32,
+    pub(crate) skip_frames: usize,
+    pub(crate) target_size: usize,
+    pub(crate) line_y_ratio: f32,
+    pub(crate) track_threshold: f32,
+    pub(crate) track_buffer: usize,
+    pub(crate) track_match_threshold: f32,
+    pub(crate) track_init_threshold: f32,
 }
 
 pub(crate) fn parse_args(
@@ -21,12 +41,14 @@ pub(crate) fn parse_args(
     let mut arguments = arguments.into_iter();
     let mut config_path = "config.env".to_owned();
     let mut processor_path = "processor.env".to_owned();
+    let mut device_path = DEFAULT_DEVICE_ENV.to_owned();
     let mut overrides = BTreeMap::new();
     let mut exit_after = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--config-env-file" => config_path = argument_value(&argument, &mut arguments)?,
             "--env-file" => processor_path = argument_value(&argument, &mut arguments)?,
+            "--device-env-file" => device_path = argument_value(&argument, &mut arguments)?,
             "--sessions-dir" => set_override(
                 &mut overrides,
                 "SESSIONS_DIR",
@@ -59,6 +81,7 @@ pub(crate) fn parse_args(
     let mut values = defaults();
     values.extend(read_env_file(&config_path)?);
     values.extend(read_env_file(&processor_path)?);
+    let device_values = read_env_file(&device_path)?;
     for key in config_environment_keys() {
         if let Ok(value) = env::var(key)
             && !value.is_empty()
@@ -80,6 +103,19 @@ pub(crate) fn parse_args(
         door_state_ttl: positive_duration_seconds(&values, "DOOR_STATE_TTL_SEC")?,
         idle_sleep: positive_duration_seconds(&values, "IDLE_SLEEP")?,
         exit_after,
+        bus_id: required_value(&device_values, "BUS_ID")?,
+        inference: InferenceConfig {
+            model_path: PathBuf::from(required_value(&values, "AI_MODEL_PATH")?),
+            streams: bounded_usize(&values, "AI_STREAMS", 1, MAX_INFERENCE_STREAMS)?,
+            confidence: unit_interval(&values, "AI_CONFIDENCE")?,
+            skip_frames: bounded_usize(&values, "AI_SKIP_FRAMES", 0, MAX_SKIP_FRAMES)?,
+            target_size: exact_usize(&values, "AI_TARGET_SIZE", MODEL_INPUT_SIZE)?,
+            line_y_ratio: unit_interval(&values, "AI_LINE_Y_RATIO")?,
+            track_threshold: unit_interval(&values, "AI_TRACK_THRESHOLD")?,
+            track_buffer: bounded_usize(&values, "AI_TRACK_BUFFER", 1, 10_000)?,
+            track_match_threshold: unit_interval(&values, "AI_TRACK_MATCH_THRESHOLD")?,
+            track_init_threshold: unit_interval(&values, "AI_TRACK_INIT_THRESHOLD")?,
+        },
     })
 }
 
@@ -89,6 +125,19 @@ fn defaults() -> BTreeMap<String, String> {
         ("ZMQ_IPC_ENDPOINT".to_owned(), DEFAULT_ENDPOINT.to_owned()),
         ("DOOR_STATE_TTL_SEC".to_owned(), "2".to_owned()),
         ("IDLE_SLEEP".to_owned(), "0.1".to_owned()),
+        (
+            "AI_MODEL_PATH".to_owned(),
+            "models/yolo26n-head-v3_int8_openvino_model/yolo26n-head-v3.xml".to_owned(),
+        ),
+        ("AI_STREAMS".to_owned(), "4".to_owned()),
+        ("AI_CONFIDENCE".to_owned(), "0.25".to_owned()),
+        ("AI_SKIP_FRAMES".to_owned(), "2".to_owned()),
+        ("AI_TARGET_SIZE".to_owned(), "256".to_owned()),
+        ("AI_LINE_Y_RATIO".to_owned(), "0.40".to_owned()),
+        ("AI_TRACK_THRESHOLD".to_owned(), "0.50".to_owned()),
+        ("AI_TRACK_BUFFER".to_owned(), "30".to_owned()),
+        ("AI_TRACK_MATCH_THRESHOLD".to_owned(), "0.80".to_owned()),
+        ("AI_TRACK_INIT_THRESHOLD".to_owned(), "0.60".to_owned()),
     ])
 }
 
@@ -99,6 +148,16 @@ const fn config_environment_keys() -> &'static [&'static str] {
         "ZMQ_IPC_ENDPOINT",
         "DOOR_STATE_TTL_SEC",
         "IDLE_SLEEP",
+        "AI_MODEL_PATH",
+        "AI_STREAMS",
+        "AI_CONFIDENCE",
+        "AI_SKIP_FRAMES",
+        "AI_TARGET_SIZE",
+        "AI_LINE_Y_RATIO",
+        "AI_TRACK_THRESHOLD",
+        "AI_TRACK_BUFFER",
+        "AI_TRACK_MATCH_THRESHOLD",
+        "AI_TRACK_INIT_THRESHOLD",
     ]
 }
 
@@ -173,8 +232,47 @@ fn positive_duration_seconds(
         .map_err(|_| format!("{key} is outside the supported duration range"))
 }
 
+fn bounded_usize(
+    values: &BTreeMap<String, String>,
+    key: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<usize, String> {
+    let value = required_value(values, key)?
+        .parse::<usize>()
+        .map_err(|_| format!("{key} must be an integer"))?;
+    if !(minimum..=maximum).contains(&value) {
+        return Err(format!("{key} must be between {minimum} and {maximum}"));
+    }
+    Ok(value)
+}
+
+fn exact_usize(
+    values: &BTreeMap<String, String>,
+    key: &str,
+    expected: usize,
+) -> Result<usize, String> {
+    let value = required_value(values, key)?
+        .parse::<usize>()
+        .map_err(|_| format!("{key} must be the integer {expected}"))?;
+    if value != expected {
+        return Err(format!("{key} must be {expected} for the production model"));
+    }
+    Ok(value)
+}
+
+fn unit_interval(values: &BTreeMap<String, String>, key: &str) -> Result<f32, String> {
+    let value = required_value(values, key)?
+        .parse::<f32>()
+        .map_err(|_| format!("{key} must be a number between 0 and 1"))?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(format!("{key} must be between 0 and 1"));
+    }
+    Ok(value)
+}
+
 const fn usage() -> &'static str {
-    "usage: pcrt-processor [--config-env-file PATH] [--env-file PATH] [--sessions-dir PATH] [--result-queue-db PATH] [--ipc-endpoint ENDPOINT] [--exit-after-ms MS]"
+    "usage: pcrt-processor [--config-env-file PATH] [--env-file PATH] [--device-env-file PATH] [--sessions-dir PATH] [--result-queue-db PATH] [--ipc-endpoint ENDPOINT] [--exit-after-ms MS]"
 }
 
 #[cfg(test)]
@@ -190,6 +288,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let global = directory.path().join("config.env");
         let processor = directory.path().join("processor.env");
+        let device = directory.path().join("device.env");
         fs::write(
             &global,
             "SESSIONS_DIR=global-sessions\nDOOR_STATE_TTL_SEC=3\n",
@@ -200,12 +299,15 @@ mod tests {
             "SESSIONS_DIR=processor-sessions\nIDLE_SLEEP=0.25\n",
         )
         .unwrap();
+        fs::write(&device, "BUS_ID=BUS-001\n").unwrap();
 
         let config = parse_args([
             "--config-env-file".to_owned(),
             global.to_string_lossy().into_owned(),
             "--env-file".to_owned(),
             processor.to_string_lossy().into_owned(),
+            "--device-env-file".to_owned(),
+            device.to_string_lossy().into_owned(),
             "--sessions-dir".to_owned(),
             "cli-sessions".to_owned(),
         ])
@@ -225,14 +327,18 @@ mod tests {
 
     #[test]
     fn config_rejects_unrepresentable_duration() {
+        let directory = tempdir().unwrap();
+        let device = directory.path().join("device.env");
+        fs::write(&device, "BUS_ID=BUS-001\n").unwrap();
         assert!(
             parse_args([
                 "--ipc-endpoint".to_owned(),
-                "ipc:///tmp/doors.sock".to_owned()
+                "ipc:///tmp/doors.sock".to_owned(),
+                "--device-env-file".to_owned(),
+                device.to_string_lossy().into_owned(),
             ])
             .is_ok()
         );
-        let directory = tempdir().unwrap();
         let processor = directory.path().join("processor.env");
         fs::write(&processor, "DOOR_STATE_TTL_SEC=1e300\n").unwrap();
 
@@ -240,6 +346,8 @@ mod tests {
             parse_args([
                 "--env-file".to_owned(),
                 processor.to_string_lossy().into_owned(),
+                "--device-env-file".to_owned(),
+                device.to_string_lossy().into_owned(),
             ])
             .is_err()
         );

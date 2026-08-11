@@ -434,9 +434,10 @@ mod tests {
             .is_err()
         );
 
+        let serial_port = absolute_serial_port();
         let config = parse_args([
             "--serial-port".to_owned(),
-            "/dev/ttyS0".to_owned(),
+            serial_port,
             "--exit-after-ms".to_owned(),
             "100".to_owned(),
         ])
@@ -459,8 +460,14 @@ mod tests {
     #[test]
     fn gateway_config_overrides_base_and_device_count_is_only_fallback() {
         let paths = ConfigTestPaths::new();
-        fs::write(&paths.base, "SERIAL_PORT=/dev/base\nDOOR_COUNT=4\n").unwrap();
-        fs::write(&paths.gateway, "SERIAL_PORT=/dev/gateway\n").unwrap();
+        let base_port = std::env::temp_dir().join("pcrt-door-base");
+        let gateway_port = absolute_serial_port();
+        fs::write(
+            &paths.base,
+            format!("SERIAL_PORT={}\nDOOR_COUNT=4\n", base_port.display()),
+        )
+        .unwrap();
+        fs::write(&paths.gateway, format!("SERIAL_PORT={gateway_port}\n")).unwrap();
         fs::write(&paths.device, "NUMBER_CAMS=3\n").unwrap();
 
         let config = parse_args([
@@ -473,8 +480,15 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(config.serial_port.as_deref(), Some("/dev/gateway"));
+        assert_eq!(config.serial_port.as_deref(), Some(gateway_port.as_str()));
         assert_eq!(config.door_count, 4);
+    }
+
+    fn absolute_serial_port() -> String {
+        std::env::temp_dir()
+            .join("pcrt-door-gateway")
+            .to_string_lossy()
+            .into_owned()
     }
 
     struct ConfigTestPaths {

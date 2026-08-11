@@ -4,14 +4,15 @@
 //! Packet decoding, door state lifecycle and JSON encoding remain in `pcrt-door`.
 //! This crate owns only PUB/SUB sockets and secure ownership of IPC socket paths.
 
+use std::{fs::File, io, path::PathBuf, time::Instant};
+
+#[cfg(unix)]
 use std::{
-    fs::{self, File, OpenOptions},
-    io,
+    fs::{self, OpenOptions},
     os::unix::{fs::FileTypeExt, net::UnixStream},
-    path::PathBuf,
-    time::Instant,
 };
 
+#[cfg(unix)]
 use fs2::FileExt;
 use pcrt_door::WireMessage;
 use serde::Deserialize;
@@ -96,6 +97,7 @@ impl DoorPublisher {
         self.cleanup_owned_ipc_path()
     }
 
+    #[cfg(unix)]
     fn cleanup_owned_ipc_path(&mut self) -> Result<(), DoorZmqError> {
         let Some(path) = self.owned_ipc_path.take() else {
             return Ok(());
@@ -107,6 +109,16 @@ impl DoorPublisher {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(DoorZmqError::io("inspect owned IPC socket", path, source)),
         }
+    }
+
+    #[cfg(not(unix))]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the Unix implementation can fail and close shares the same transport API"
+    )]
+    fn cleanup_owned_ipc_path(&mut self) -> Result<(), DoorZmqError> {
+        self.owned_ipc_path.take();
+        Ok(())
     }
 }
 
@@ -237,6 +249,7 @@ pub enum DoorZmqError {
     Zmq(zmq::Error),
     PublisherClosed,
     IpcPathNotAbsolute(PathBuf),
+    IpcUnsupported,
     IpcPathHasNoParent(PathBuf),
     IpcParentMissing(PathBuf),
     IpcAlreadyOwned(PathBuf),
@@ -250,6 +263,7 @@ pub enum DoorZmqError {
 }
 
 impl DoorZmqError {
+    #[cfg(unix)]
     fn io(action: &'static str, path: PathBuf, source: io::Error) -> Self {
         Self::Io {
             action,
@@ -270,6 +284,9 @@ impl core::fmt::Display for DoorZmqError {
                     "IPC endpoint path must be absolute: {}",
                     path.display()
                 )
+            }
+            Self::IpcUnsupported => {
+                formatter.write_str("ZeroMQ ipc:// endpoints are supported only on Unix")
             }
             Self::IpcPathHasNoParent(path) => {
                 write!(
@@ -322,6 +339,7 @@ impl std::error::Error for DoorZmqError {
             Self::Io { source, .. } => Some(source),
             Self::PublisherClosed
             | Self::IpcPathNotAbsolute(_)
+            | Self::IpcUnsupported
             | Self::IpcPathHasNoParent(_)
             | Self::IpcParentMissing(_)
             | Self::IpcAlreadyOwned(_)
@@ -331,6 +349,7 @@ impl std::error::Error for DoorZmqError {
     }
 }
 
+#[cfg(unix)]
 fn prepare_ipc_endpoint(endpoint: &str) -> Result<(Option<File>, Option<PathBuf>), DoorZmqError> {
     let Some(raw_path) = endpoint.strip_prefix("ipc://") else {
         return Ok((None, None));
@@ -384,22 +403,33 @@ fn prepare_ipc_endpoint(endpoint: &str) -> Result<(Option<File>, Option<PathBuf>
     Ok((Some(lock), Some(path)))
 }
 
+#[cfg(not(unix))]
+fn prepare_ipc_endpoint(endpoint: &str) -> Result<(Option<File>, Option<PathBuf>), DoorZmqError> {
+    if endpoint.starts_with("ipc://") {
+        return Err(DoorZmqError::IpcUnsupported);
+    }
+    Ok((None, None))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration};
+
+    #[cfg(unix)]
     use std::{
         fs,
         io::Write,
         os::unix::{fs::symlink, net::UnixListener},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
-        thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        DoorPublisher, DoorSubscriber, DoorSubscription, DoorUpdate, prepare_ipc_endpoint,
-    };
+    #[cfg(unix)]
+    use super::prepare_ipc_endpoint;
+    use super::{DoorPublisher, DoorSubscriber, DoorSubscription, DoorUpdate};
 
+    #[cfg(unix)]
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -493,6 +523,7 @@ mod tests {
         assert!(subscriber.latest_received_at().is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ipc_refuses_regular_file_and_symlink() {
         let paths = IpcTestPaths::new();
@@ -506,6 +537,7 @@ mod tests {
         assert!(prepare_ipc_endpoint(&paths.endpoint()).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ipc_removes_only_stale_socket_after_lock() {
         let paths = IpcTestPaths::new();
@@ -520,6 +552,7 @@ mod tests {
         assert!(!paths.socket.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ipc_lock_rejects_second_gateway_before_socket_is_touched() {
         let paths = IpcTestPaths::new();
@@ -530,11 +563,13 @@ mod tests {
         drop(first);
     }
 
+    #[cfg(unix)]
     struct IpcTestPaths {
         socket: PathBuf,
         target: PathBuf,
     }
 
+    #[cfg(unix)]
     impl IpcTestPaths {
         fn new() -> Self {
             let suffix = format!(
@@ -558,6 +593,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for IpcTestPaths {
         fn drop(&mut self) {
             for path in [

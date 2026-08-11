@@ -1,0 +1,20 @@
+[package]
+name = "pcrt-uploader"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ctrlc = "3.5.2"
+pcrt-api-client = { path = "../../crates/pcrt-api-client" }
+pcrt-result-queue = { path = "../../crates/pcrt-result-queue" }
+pcrt-service = { path = "../../crates/pcrt-service" }
+pcrt-uploader-core = { path = "../../crates/pcrt-uploader" }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints]
+workspace = true

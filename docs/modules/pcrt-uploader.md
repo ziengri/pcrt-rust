@@ -13,6 +13,30 @@ pcrt-result-queue -> pcrt-uploader -> pcrt-api-client -> Passenger Flow API
 Uploader рассчитан на одну service instance. Несколько uploader, работающих с
 одной SQLite-базой, не поддерживаются: queue не использует lease.
 
+## Binary
+
+`bins/pcrt-uploader` is the native composition binary. It creates the SQLite
+queue, `TimelineApiClient` and the `pcrt-uploader-core` `Uploader` loop, and
+installs a graceful shutdown handler for `SIGINT` and `SIGTERM`.
+
+Run it from the Rust project directory:
+
+```bash
+cargo run -p pcrt-uploader -- \
+  --config-env-file config.env \
+  --env-file uploader.env
+```
+
+`uploader.env` is the uploader-owned project configuration. It defines the
+shared `RESULT_QUEUE_DB`, retry values, `API_BASE_URL`, `API_X_AUTH` and
+`API_TIMEOUT_SEC`. Its `RESULT_QUEUE_DB` must be identical to the value used by
+`pcrt-processor`; the default is
+`/var/lib/pcrt/sessions/outbox/results.sqlite`.
+
+Configuration precedence is defaults, `config.env`, `uploader.env`, process
+environment and CLI. `--result-queue-db` is the only supported CLI override;
+credentials are never accepted as command-line arguments.
+
 ## Зависимости и границы
 
 | Crate | Использование |

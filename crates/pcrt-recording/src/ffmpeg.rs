@@ -329,14 +329,17 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), FfmpegError
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, time::Duration};
+    use std::{path::PathBuf, time::Duration};
 
     #[cfg(unix)]
-    use std::{os::unix::fs::PermissionsExt, process::Command, thread, time::Instant};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command, thread, time::Instant};
 
+    #[cfg(unix)]
     use tempfile::tempdir;
 
-    use super::{FfmpegConfig, FfmpegEncoder, FfmpegError, VIDEO_CODEC, X264_CRF, X264_PRESET};
+    #[cfg(unix)]
+    use super::FfmpegEncoder;
+    use super::{FfmpegConfig, FfmpegError, VIDEO_CODEC, X264_CRF, X264_PRESET};
     use crate::lifecycle::VIDEO_FORMAT;
 
     #[test]

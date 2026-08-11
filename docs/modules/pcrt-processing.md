@@ -69,16 +69,25 @@ processor ownership:
 ```text
 bins/pcrt-processor/src/
 |-- config.rs          # typed env/CLI configuration
+|-- inference/         # OpenCV FFmpeg, OpenVINO async and ByteTrack adapter
+|-- result_encoder.rs  # timeline API payload encoder
 |-- runtime.rs         # lock, recovery, subscriber loop and shutdown
 `-- processor/
     |-- gate.rs        # all-closed admission policy for a new claim only
     `-- lock.rs        # exclusive sessions-root ownership
 ```
 
-The binary does not start a placeholder AI backend: doing so could claim and
-incorrectly fail production sessions. Native decode/OpenVINO is added only
-after fixture baseline and shadow comparison with the Python implementation;
-then it is injected into the existing generic runtime as `InferenceBackend`.
+`NativeInferenceBackend` is injected into the generic runtime as
+`InferenceBackend`. It decodes only through OpenCV `CAP_FFMPEG`, feeds RGB
+letterboxed `1x3x256x256` tensors to OpenVINO CPU requests, uses four async
+requests by default and applies ByteTrack updates in source-frame order.
+Skipped source frames advance the tracker with empty detections. A lost track's
+Kalman prediction may mark a pending crossing, but the count is committed only
+after a confirmed bbox crosses the horizontal line.
+
+The default line is `AI_LINE_Y_RATIO=0.40`. The production model input is fixed
+at `AI_TARGET_SIZE=256`; configuration rejects a different value instead of
+silently reshaping the model.
 
 ## Configuration
 
@@ -92,3 +101,18 @@ defaults, `config.env`, `processor.env`, environment and CLI.
 | `ZMQ_IPC_ENDPOINT` | `ipc:///run/doors.sock` | Aggregate `doors.state` subscriber endpoint. |
 | `DOOR_STATE_TTL_SEC` | `2` | Maximum local age of a valid aggregate state before new claims pause. |
 | `IDLE_SLEEP` | `0.1` | Sleep while paused or no ready sessions exist. |
+| `AI_MODEL_PATH` | `models/yolo26n-head-v3_int8_openvino_model/yolo26n-head-v3.xml` | OpenVINO IR XML; matching `.bin` is required. |
+| `AI_STREAMS` | `4` | OpenVINO CPU infer requests; range `1..=16`. |
+| `AI_CONFIDENCE` | `0.25` | Minimum detector confidence. |
+| `AI_SKIP_FRAMES` | `2` | Source frames skipped between detector submissions. |
+| `AI_TARGET_SIZE` | `256` | Required fixed model input size. |
+| `AI_LINE_Y_RATIO` | `0.40` | Counting line as a fraction of source-frame height. |
+| `AI_TRACK_THRESHOLD` | `0.50` | ByteTrack high-confidence association threshold. |
+| `AI_TRACK_BUFFER` | `30` | ByteTrack lost-track lifetime in source frames. |
+| `AI_TRACK_MATCH_THRESHOLD` | `0.80` | ByteTrack IoU association threshold. |
+| `AI_TRACK_INIT_THRESHOLD` | `0.60` | Minimum confidence for a new ByteTrack identity. |
+
+`BUS_ID` is required from the device environment file, which systemd passes as
+`/etc/pcrt/device.env`. `TimelineResultEncoder` publishes the existing timeline
+payload fields `bus`, `cam`, `date`, `in` and `out` with a session-derived
+idempotency key.

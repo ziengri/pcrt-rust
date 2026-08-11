@@ -1,0 +1,3 @@
+[env]
+# Production uses the documented dynamic vcpkg OpenCV package on Windows.
+VCPKGRS_DYNAMIC = "1"

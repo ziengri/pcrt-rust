@@ -1,27 +1,32 @@
 //! Processor composition root.
 
 mod config;
-// The runtime is ready for injection by the native backend slice. It must not be
-// started with a placeholder backend because that could fail real sessions.
-#[allow(
-    dead_code,
-    reason = "native inference backend is intentionally not enabled yet"
-)]
+mod inference;
 mod processor;
-#[allow(
-    dead_code,
-    reason = "native inference backend is intentionally not enabled yet"
-)]
+mod result_encoder;
 mod runtime;
 
 fn main() -> std::process::ExitCode {
     match config::parse_args(std::env::args().skip(1)) {
-        Ok(_) => {
-            eprintln!(
-                "pcrt-processor native inference backend is not enabled; deploy the existing processor until fixture and shadow validation are complete"
-            );
+        Ok(config) => run(&config),
+        Err(error) => {
+            eprintln!("pcrt-processor: {error}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+fn run(config: &config::ProcessorConfig) -> std::process::ExitCode {
+    let backend = match inference::backend::NativeInferenceBackend::new(config) {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("pcrt-processor: initialize native inference: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let encoder = result_encoder::TimelineResultEncoder::new(config.bus_id.clone());
+    match runtime::run(config, backend, encoder) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("pcrt-processor: {error}");
             std::process::ExitCode::FAILURE

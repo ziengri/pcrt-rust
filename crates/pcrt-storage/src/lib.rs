@@ -1535,11 +1535,23 @@ fn ensure_directory(path: &Path, context: &'static str) -> Result<(), StorageErr
     Ok(())
 }
 
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), StorageError> {
     File::open(path)
         .map_err(|error| StorageError::io("open directory for fsync", error))?
         .sync_all()
         .map_err(|error| StorageError::io("fsync directory", error))
+}
+
+#[cfg(windows)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Unix implementation can fail and callers share the same durable-storage API"
+)]
+fn sync_directory(_path: &Path) -> Result<(), StorageError> {
+    // Windows does not support opening a directory through std::fs::File, so a
+    // directory fsync requires Win32 handle APIs that this safe crate forbids.
+    Ok(())
 }
 
 fn validate_source_id(value: &str) -> Result<(), StorageError> {
