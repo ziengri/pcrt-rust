@@ -19,6 +19,8 @@ These scripts install the native Rust services from `/opt/pcrt`:
 - `buspcrt-recorder@<CAMERA_ID>.service`
 - `buspcrt-processor.service`
 - `buspcrt-uploader.service`
+- `buspcrt-modem-watchdog.service`
+- `buspcrt-updater.service` and `buspcrt-updater.timer`
 
 Build the release binaries before installing services:
 
@@ -31,6 +33,10 @@ sudo PROJECT_ROOT=/opt/pcrt bash scripts/services/install_services.sh
 The installer reads `NUMBER_CAMS` from `/etc/pcrt/device.env` and installs only
 valid `recorder-cam*.env` files whose numeric `CAMERA_ID` is within that range.
 All services run as root and are restarted by systemd on failure.
+
+`buspcrt-updater.timer` fast-forwards the configured Git branch and restarts
+native services. The branch must contain current release binaries under
+`target/release`; the updater does not run Cargo on the vehicle.
 
 Production IPC is `ipc:///run/pcrt/doors.sock`. The gateway unit creates
 `/run/pcrt`; recorder and processor configurations must retain this endpoint.

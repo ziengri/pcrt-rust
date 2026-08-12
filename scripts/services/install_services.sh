@@ -72,6 +72,8 @@ main() {
   require_file "$PROJECT_ROOT/door_gateway.env"
   require_file "$PROJECT_ROOT/processor.env"
   require_file "$PROJECT_ROOT/uploader.env"
+  require_file "$PROJECT_ROOT/modem-watchdog.env"
+  require_file "$PROJECT_ROOT/updater.env"
   grep -qx 'ZMQ_IPC_ENDPOINT=ipc:///run/pcrt/doors.sock' "$PROJECT_ROOT/config.env" || \
     die "config.env must set ZMQ_IPC_ENDPOINT=ipc:///run/pcrt/doors.sock"
   require_executable "$PROJECT_ROOT/target/release/pcrt-door-gateway"
@@ -82,16 +84,22 @@ main() {
   require_file "$(service_script recorder_service.sh)"
   require_file "$(service_script processor_service.sh)"
   require_file "$(service_script uploader_service.sh)"
+  require_file "$(service_script modem_watchdog_service.sh)"
+  require_file "$(service_script updater_service.sh)"
 
   log_info "Reinstalling native Rust services from $PROJECT_ROOT for $NUMBER_CAMS cameras"
   uninstall_recorder_services
   bash "$(service_script uploader_service.sh)" uninstall
+  bash "$(service_script modem_watchdog_service.sh)" uninstall
+  bash "$(service_script updater_service.sh)" uninstall
   bash "$(service_script processor_service.sh)" uninstall
   bash "$(service_script door_gateway_service.sh)" uninstall
 
   bash "$(service_script door_gateway_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/door_gateway.env"
   bash "$(service_script processor_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/processor.env"
   bash "$(service_script uploader_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/uploader.env"
+  bash "$(service_script modem_watchdog_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/modem-watchdog.env"
+  bash "$(service_script updater_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/updater.env"
   install_recorder_services
   log_info "Native Rust services reinstalled successfully"
 }
