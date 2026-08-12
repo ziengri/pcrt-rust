@@ -61,7 +61,8 @@ The full file map and native launch commands are in
 - Секреты не передаются в CLI-аргументах и не выводятся в логи.
 - Каждый демон обязан корректно обработать `SIGTERM` и восстановиться после сбоя.
 
-Подробности: [архитектура](docs/architecture.md), [план улучшений](docs/improvements.md)
+Подробности: [архитектура](docs/architecture.md), [план улучшений](docs/improvements.md),
+[лицензирование](docs/licensing.md)
 и модули [очередь результатов](docs/modules/pcrt-result-queue.md),
 [API-клиент](docs/modules/pcrt-api-client.md),
 [storage](docs/modules/pcrt-storage.md),

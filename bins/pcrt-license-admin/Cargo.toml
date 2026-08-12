@@ -1,0 +1,16 @@
+[package]
+name = "pcrt-license-admin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcrt-license = { path = "../../crates/pcrt-license" }
+pcrt-license-signing = { path = "../../crates/pcrt-license-signing" }
+serde = "1.0.228"
+serde_json = "1.0.149"
+
+[lints]
+workspace = true

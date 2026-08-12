@@ -17,6 +17,10 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(config: &config::ProcessorConfig) -> std::process::ExitCode {
+    if let Err(error) = pcrt_license::validate_installed(&config.bus_id) {
+        eprintln!("pcrt-processor: license denied: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     let backend = match inference::backend::NativeInferenceBackend::new(config) {
         Ok(backend) => backend,
         Err(error) => {

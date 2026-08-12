@@ -7,6 +7,7 @@ use std::{
 
 use pcrt_door::{DoorProtocol, DoorSnapshot, encode_snapshot};
 use pcrt_door_zmq::DoorPublisher;
+use pcrt_license::validate_installed;
 use pcrt_service::ShutdownToken;
 
 use crate::{
@@ -23,6 +24,7 @@ const READ_BUFFER_SIZE: usize = 4096;
 ///
 /// Returns configuration-independent adapter setup or runtime failures.
 pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
+    validate_license(&config.bus_id)?;
     let protocol = DoorProtocol::new(config.door_count).map_err(|error| error.to_string())?;
     let shutdown = ShutdownToken::default();
     install_shutdown_handler(shutdown.clone())?;
@@ -51,6 +53,10 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
             break;
         }
         if source.is_none() && engine.reconnect_due(now) {
+            if let Err(error) = validate_license(&config.bus_id) {
+                log_event("license_denied", &[("reason", &error)]);
+                return Err(error);
+            }
             engine.begin_connect_attempt();
             match open_source(config) {
                 Ok(opened) => {
@@ -65,6 +71,11 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
             }
         }
         if let Some(reader) = source.as_mut() {
+            if let Err(error) = validate_license(&config.bus_id) {
+                log_event("license_denied", &[("reason", &error)]);
+                source.take();
+                return Err(error);
+            }
             match reader.read(&mut buffer) {
                 Ok(0) if reader.is_test_transport() => {
                     log_event("test_source_complete", &[]);
@@ -99,6 +110,12 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
         log_event("ipc_cleanup_failed", &[("error", &error.to_string())]);
     }
     Ok(())
+}
+
+fn validate_license(bus_id: &str) -> Result<(), String> {
+    validate_installed(bus_id)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn publish_snapshot(

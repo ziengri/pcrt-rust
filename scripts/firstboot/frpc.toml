@@ -1,0 +1,20 @@
+serverAddr = "frp.bus.gortransportnch.ru"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "4e1cd74ea247612e09c4a4cb876cdccc23fe2fa4117b156d7abd9670ef6f3486"
+
+transport.tls.enable = true
+loginFailExit = false
+user = "__BUS_ID__"
+
+metadatas.bus_id = "__BUS_ID__"
+metadatas.domain = "__BUS_ID__.bus.gortransportnch.ru"
+
+[[proxies]]
+name = "ssh"
+type = "tcpmux"
+multiplexer = "httpconnect"
+customDomains = ["__BUS_ID__.bus.gortransportnch.ru"]
+localIP = "127.0.0.1"
+localPort = 22

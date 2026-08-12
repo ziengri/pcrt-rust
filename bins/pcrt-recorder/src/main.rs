@@ -30,6 +30,7 @@ struct RecorderServiceConfig {
     door_open_value: u8,
     sessions_dir: PathBuf,
     endpoint: String,
+    bus_id: Option<String>,
     width: u32,
     height: u32,
     frames_per_second: u32,
@@ -47,6 +48,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let config = parse_args(env::args().skip(1))?;
+    log_license_status(config.bus_id.as_deref());
     let shutdown = ShutdownToken::default();
     install_shutdown_handler(shutdown.clone())?;
     let storage = SessionStorage::open(&config.sessions_dir).map_err(|error| error.to_string())?;
@@ -128,6 +130,19 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn log_license_status(bus_id: Option<&str>) {
+    match bus_id {
+        Some(bus_id) => match pcrt_license::validate_installed(bus_id) {
+            Ok(_) => log_event("license_status", &[("status", "valid")]),
+            Err(error) => log_event(
+                "license_status",
+                &[("status", "invalid"), ("reason", &error.to_string())],
+            ),
+        },
+        None => log_event("license_status", &[("status", "unavailable")]),
+    }
+}
+
 fn install_shutdown_handler(token: ShutdownToken) -> Result<(), String> {
     ctrlc::set_handler(move || token.request_shutdown())
         .map_err(|error| format!("install shutdown handler: {error}"))
@@ -158,12 +173,14 @@ fn parse_args(
     let mut arguments = arguments.into_iter();
     let mut config_path = "config.env".to_owned();
     let mut recorder_path = "recorder-cam.env".to_owned();
+    let mut device_path = "/etc/pcrt/device.env".to_owned();
     let mut overrides = BTreeMap::new();
     let mut exit_after = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--config-env-file" => config_path = argument_value(&argument, &mut arguments)?,
             "--env-file" => recorder_path = argument_value(&argument, &mut arguments)?,
+            "--device-env-file" => device_path = argument_value(&argument, &mut arguments)?,
             "--source" => set_override(
                 &mut overrides,
                 "SOURCE",
@@ -206,6 +223,7 @@ fn parse_args(
     let mut values = defaults();
     values.extend(read_env_file(&config_path)?);
     values.extend(read_env_file(&recorder_path)?);
+    let device_values = read_env_file(&device_path)?;
     for key in config_environment_keys() {
         if let Ok(value) = env::var(key) {
             if !value.is_empty() {
@@ -221,6 +239,10 @@ fn parse_args(
         door_open_value: parse_u8(&values, "DOOR_OPEN_VALUE")?,
         sessions_dir: PathBuf::from(required_value(&values, "SESSIONS_DIR")?),
         endpoint: required_value(&values, "ZMQ_IPC_ENDPOINT")?,
+        bus_id: device_values
+            .get("BUS_ID")
+            .filter(|value| !value.is_empty())
+            .cloned(),
         width: positive_u32(&values, "WIDTH")?,
         height: positive_u32(&values, "HEIGHT")?,
         frames_per_second: positive_u32(&values, "FPS")?,
@@ -364,7 +386,7 @@ fn positive_duration_seconds(
 }
 
 fn usage() -> &'static str {
-    "usage: pcrt-recorder [--config-env-file PATH] [--env-file PATH] [--source VALUE] [--camera-id VALUE] [--door-channel N] [--sessions-dir PATH] [--ipc-endpoint ENDPOINT] [--exit-after-ms MS]"
+    "usage: pcrt-recorder [--config-env-file PATH] [--env-file PATH] [--device-env-file PATH] [--source VALUE] [--camera-id VALUE] [--door-channel N] [--sessions-dir PATH] [--ipc-endpoint ENDPOINT] [--exit-after-ms MS]"
 }
 
 #[cfg(test)]

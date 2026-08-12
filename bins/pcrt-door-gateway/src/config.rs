@@ -11,6 +11,7 @@ pub(crate) struct GatewayConfig {
     #[cfg(feature = "test-transport")]
     pub(crate) test_source_path: Option<String>,
     pub(crate) endpoint: String,
+    pub(crate) bus_id: String,
     pub(crate) door_count: u8,
     pub(crate) serial_baudrate: u32,
     pub(crate) serial_data_bits: serialport::DataBits,
@@ -189,6 +190,7 @@ pub(crate) fn parse_args(
         #[cfg(feature = "test-transport")]
         test_source_path,
         endpoint: required_value(&values, "ZMQ_IPC_ENDPOINT")?,
+        bus_id: required_value(&device_values, "BUS_ID")?,
         door_count: required_value(&values, "DOOR_COUNT")?
             .parse()
             .map_err(|_| "DOOR_COUNT must be 3 or 4".to_owned())?,
@@ -421,6 +423,7 @@ mod tests {
     #[test]
     fn exit_after_is_rejected_in_env_file_but_allowed_on_cli() {
         let paths = ConfigTestPaths::new();
+        fs::write(&paths.device, "BUS_ID=BUS-001\n").unwrap();
         fs::write(
             &paths.gateway,
             "SERIAL_PORT=/dev/ttyS0\nEXIT_AFTER_MS=100\n",
@@ -440,6 +443,8 @@ mod tests {
             serial_port,
             "--exit-after-ms".to_owned(),
             "100".to_owned(),
+            "--device-env-file".to_owned(),
+            paths.device.to_string_lossy().into_owned(),
         ])
         .unwrap();
         assert_eq!(config.exit_after, Some(Duration::from_millis(100)));
@@ -468,7 +473,7 @@ mod tests {
         )
         .unwrap();
         fs::write(&paths.gateway, format!("SERIAL_PORT={gateway_port}\n")).unwrap();
-        fs::write(&paths.device, "NUMBER_CAMS=3\n").unwrap();
+        fs::write(&paths.device, "NUMBER_CAMS=3\nBUS_ID=BUS-001\n").unwrap();
 
         let config = parse_args([
             "--config-env-file".to_owned(),
