@@ -60,6 +60,7 @@ pub struct HardwareIdentifier {
 pub enum HardwareIdentifierType {
     SmbiosUuid,
     SystemDiskSerial,
+    SystemDiskWwid,
 }
 
 impl HardwareIdentifierType {
@@ -67,6 +68,7 @@ impl HardwareIdentifierType {
         match self {
             Self::SmbiosUuid => "smbios_uuid",
             Self::SystemDiskSerial => "system_disk_serial",
+            Self::SystemDiskWwid => "system_disk_wwid",
         }
     }
 }
@@ -114,8 +116,11 @@ impl fmt::Display for LicenseError {
             Self::BusMismatch => formatter.write_str("license is for a different bus"),
             Self::Expired => formatter.write_str("license has expired"),
             Self::HardwareMismatch => formatter.write_str("license hardware does not match"),
-            Self::HardwareUnavailable(_) => {
-                formatter.write_str("required license hardware is unavailable")
+            Self::HardwareUnavailable(reason) => {
+                write!(
+                    formatter,
+                    "required license hardware is unavailable: {reason}"
+                )
             }
         }
     }
@@ -221,17 +226,15 @@ pub fn create_request(bus_id: &str, request_id: String) -> Result<LicenseRequest
 /// Reads and hashes required identifiers from the current Linux computer.
 #[allow(clippy::missing_errors_doc)]
 pub fn collect_hardware_identifiers() -> Result<Vec<HardwareIdentifier>, LicenseError> {
+    let (disk_kind, disk_value) = read_system_disk_identifier()?;
     Ok(vec![
         HardwareIdentifier {
             kind: HardwareIdentifierType::SmbiosUuid,
             sha256: hardware_hash(HardwareIdentifierType::SmbiosUuid, &read_smbios_uuid()?),
         },
         HardwareIdentifier {
-            kind: HardwareIdentifierType::SystemDiskSerial,
-            sha256: hardware_hash(
-                HardwareIdentifierType::SystemDiskSerial,
-                &read_system_disk_serial()?,
-            ),
+            kind: disk_kind,
+            sha256: hardware_hash(disk_kind, &disk_value),
         },
     ])
 }
@@ -303,10 +306,26 @@ pub fn read_smbios_uuid() -> Result<String, LicenseError> {
 /// Reads and normalizes the serial of the physical disk hosting `/`.
 #[allow(clippy::missing_errors_doc)]
 pub fn read_system_disk_serial() -> Result<String, LicenseError> {
-    read_system_disk_serial_from(Path::new("/proc/self/mountinfo"), Path::new("/sys"))
+    let (kind, value) = read_system_disk_identifier()?;
+    if kind == HardwareIdentifierType::SystemDiskSerial {
+        Ok(value)
+    } else {
+        Err(LicenseError::HardwareUnavailable(
+            "system disk serial is unavailable; WWID fallback is in use".to_owned(),
+        ))
+    }
 }
 
-fn read_system_disk_serial_from(mountinfo: &Path, sys_root: &Path) -> Result<String, LicenseError> {
+/// Reads the preferred stable identifier of the physical disk hosting `/`.
+#[allow(clippy::missing_errors_doc)]
+pub fn read_system_disk_identifier() -> Result<(HardwareIdentifierType, String), LicenseError> {
+    read_system_disk_identifier_from(Path::new("/proc/self/mountinfo"), Path::new("/sys"))
+}
+
+fn read_system_disk_identifier_from(
+    mountinfo: &Path,
+    sys_root: &Path,
+) -> Result<(HardwareIdentifierType, String), LicenseError> {
     let source = fs::read_to_string(mountinfo).map_err(|error| io_error(&error))?;
     let major_minor = root_major_minor(&source)?;
     let device_link = sys_root.join("dev/block").join(&major_minor);
@@ -315,14 +334,25 @@ fn read_system_disk_serial_from(mountinfo: &Path, sys_root: &Path) -> Result<Str
     let mut current = fs::canonicalize(sys_root.join("class/block").join(&disk))
         .map_err(|error| io_error(&error))?;
     loop {
-        for serial_path in [
-            current.join("device/serial"),
+        for serial_path in [current.join("device/serial"), current.join("serial")] {
+            if serial_path.is_file()
+                && let Ok(value) = read_identifier_file(&serial_path)
+                    .and_then(|value| normalize_disk_identifier(&value))
+            {
+                return Ok((HardwareIdentifierType::SystemDiskSerial, value));
+            }
+        }
+        for wwid_path in [
+            current.join("device/wwid"),
             current.join("device/cid"),
-            current.join("serial"),
+            current.join("wwid"),
             current.join("cid"),
         ] {
-            if serial_path.is_file() {
-                return normalize_disk_serial(&read_identifier_file(&serial_path)?);
+            if wwid_path.is_file()
+                && let Ok(value) = read_identifier_file(&wwid_path)
+                    .and_then(|value| normalize_disk_identifier(&value))
+            {
+                return Ok((HardwareIdentifierType::SystemDiskWwid, value));
             }
         }
         let Some(parent) = current.parent() else {
@@ -334,7 +364,7 @@ fn read_system_disk_serial_from(mountinfo: &Path, sys_root: &Path) -> Result<Str
         current = parent.to_owned();
     }
     Err(LicenseError::HardwareUnavailable(format!(
-        "system disk {disk} has no serial"
+        "system disk {disk} has no serial or WWID"
     )))
 }
 
@@ -379,9 +409,9 @@ fn physical_disk_name(resolved: &Path) -> Result<String, LicenseError> {
     Ok(block.to_owned())
 }
 
-fn normalize_disk_serial(value: &str) -> Result<String, LicenseError> {
+fn normalize_disk_identifier(value: &str) -> Result<String, LicenseError> {
     let normalized = value.trim_ascii().to_ascii_uppercase();
-    validate_hardware_value("system disk serial", &normalized)?;
+    validate_hardware_value("system disk identifier", &normalized)?;
     Ok(normalized)
 }
 
@@ -418,7 +448,8 @@ fn validate_required_identifier_set(
     }
     if expected.len() != 2
         || !expected.contains_key(&HardwareIdentifierType::SmbiosUuid)
-        || !expected.contains_key(&HardwareIdentifierType::SystemDiskSerial)
+        || (expected.contains_key(&HardwareIdentifierType::SystemDiskSerial)
+            == expected.contains_key(&HardwareIdentifierType::SystemDiskWwid))
     {
         return Err(LicenseError::InvalidFormat(
             "required hardware types".to_owned(),
@@ -634,7 +665,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn root_disk_serial_uses_parent_physical_disk() {
+    fn root_disk_identifier_uses_parent_physical_disk() {
         let directory = tempdir().unwrap();
         let sys = directory.path().join("sys");
         let devices = sys.join("devices/pci/block/sda/sda1");
@@ -657,8 +688,45 @@ mod tests {
         let mountinfo = directory.path().join("mountinfo");
         fs::write(&mountinfo, "1 2 8:1 / / rw - ext4 /dev/sda1 rw\n").unwrap();
         assert_eq!(
-            read_system_disk_serial_from(&mountinfo, &sys).unwrap(),
-            "DISK-1"
+            read_system_disk_identifier_from(&mountinfo, &sys).unwrap(),
+            (
+                HardwareIdentifierType::SystemDiskSerial,
+                "DISK-1".to_owned()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_disk_identifier_falls_back_to_wwid() {
+        let directory = tempdir().unwrap();
+        let sys = directory.path().join("sys");
+        let devices = sys.join("devices/pci/block/sda/sda1");
+        fs::create_dir_all(&devices).unwrap();
+        fs::write(devices.join("partition"), "1\n").unwrap();
+        fs::create_dir_all(sys.join("devices/pci/block/sda/device")).unwrap();
+        fs::write(
+            sys.join("devices/pci/block/sda/device/wwid"),
+            " naa.1234 \n",
+        )
+        .unwrap();
+        fs::create_dir_all(sys.join("dev/block")).unwrap();
+        fs::create_dir_all(sys.join("class/block")).unwrap();
+        std::os::unix::fs::symlink(&devices, sys.join("dev/block/8:1")).unwrap();
+        std::os::unix::fs::symlink(
+            sys.join("devices/pci/block/sda"),
+            sys.join("class/block/sda"),
+        )
+        .unwrap();
+        let mountinfo = directory.path().join("mountinfo");
+        fs::write(&mountinfo, "1 2 8:1 / / rw - ext4 /dev/sda1 rw\n").unwrap();
+
+        assert_eq!(
+            read_system_disk_identifier_from(&mountinfo, &sys).unwrap(),
+            (
+                HardwareIdentifierType::SystemDiskWwid,
+                "NAA.1234".to_owned()
+            )
         );
     }
 
@@ -722,8 +790,8 @@ mod tests {
                     sha256: hardware_hash(HardwareIdentifierType::SmbiosUuid, UUID),
                 },
                 HardwareIdentifier {
-                    kind: HardwareIdentifierType::SystemDiskSerial,
-                    sha256: hardware_hash(HardwareIdentifierType::SystemDiskSerial, "DISK-1"),
+                    kind: HardwareIdentifierType::SystemDiskWwid,
+                    sha256: hardware_hash(HardwareIdentifierType::SystemDiskWwid, "DISK-1"),
                 },
             ],
         }

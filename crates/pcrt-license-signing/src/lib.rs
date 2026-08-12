@@ -79,8 +79,8 @@ mod tests {
                     ),
                 },
                 HardwareIdentifier {
-                    kind: HardwareIdentifierType::SystemDiskSerial,
-                    sha256: hardware_hash(HardwareIdentifierType::SystemDiskSerial, "DISK-1"),
+                    kind: HardwareIdentifierType::SystemDiskWwid,
+                    sha256: hardware_hash(HardwareIdentifierType::SystemDiskWwid, "DISK-1"),
                 },
             ],
         };

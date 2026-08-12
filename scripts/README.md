@@ -1,5 +1,18 @@
 # Native Rust Deployment Scripts
 
+## Build Linux Release Bundle
+
+From the repository root:
+
+```bash
+./scripts/release/build_linux_bundle.sh
+```
+
+The bundle is created at `release/linux/`. Runtime binaries are placed directly
+in that directory, alongside the current service configuration files, `models/`
+and the service/firstboot scripts. Private keys, `license.lic`, `device.env`,
+sessions and databases are intentionally excluded.
+
 These scripts install the native Rust services from `/opt/pcrt`:
 
 - `buspcrt-door-gateway.service`
