@@ -51,7 +51,7 @@ for binary in \
   copy_binary "$binary"
 done
 
-for config in config.env door_gateway.env processor.env uploader.env; do
+for config in config.env door_gateway.env processor.env uploader.env updater.env modem-watchdog.env; do
   copy_file "${PROJECT_ROOT}/${config}"
 done
 
@@ -66,14 +66,8 @@ shopt -u nullglob
 [[ -d "${PROJECT_ROOT}/models" ]] || die "Models directory not found"
 cp -a "${PROJECT_ROOT}/models" "${OUTPUT_DIR}/models"
 
-[[ -d "${PROJECT_ROOT}/scripts/services" ]] || die "Service scripts directory not found"
-[[ -d "${PROJECT_ROOT}/scripts/firstboot" ]] || die "Firstboot scripts directory not found"
-mkdir -p "${OUTPUT_DIR}/scripts"
-cp -a "${PROJECT_ROOT}/scripts/services" "${OUTPUT_DIR}/scripts/services"
-cp -a "${PROJECT_ROOT}/scripts/firstboot" "${OUTPUT_DIR}/scripts/firstboot"
-if [[ -f "${PROJECT_ROOT}/scripts/README.md" ]]; then
-  cp -f "${PROJECT_ROOT}/scripts/README.md" "${OUTPUT_DIR}/scripts/README.md"
-fi
+[[ -d "${PROJECT_ROOT}/scripts" ]] || die "Scripts directory not found"
+cp -a "${PROJECT_ROOT}/scripts" "${OUTPUT_DIR}/scripts"
 
 for binary in "${OUTPUT_DIR}"/pcrt-*; do
   chmod 0755 "$binary"

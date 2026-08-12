@@ -54,7 +54,7 @@ install_recorder_services() {
       log_info "Skipping camera $camera_id; NUMBER_CAMS=$NUMBER_CAMS"
       continue
     fi
-    bash "$(service_script recorder_service.sh)" install --instance "$camera_id" --project-root "$PROJECT_ROOT" --env "$env_file"
+    bash "$(service_script recorder_service.sh)" install --instance "$camera_id" --project-root "$PROJECT_ROOT" --env "$env_file" --binary "$(binary_path pcrt-recorder)"
     installed=$((installed + 1))
   done
   shopt -u nullglob

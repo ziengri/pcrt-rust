@@ -1,4 +1,4 @@
-serverAddr = "frp.bus.gortransportnch.ru"
+serverAddr = "frp.bus.zeltr.devlabacloud.ru"
 serverPort = 7000
 
 auth.method = "token"
@@ -9,12 +9,12 @@ loginFailExit = false
 user = "__BUS_ID__"
 
 metadatas.bus_id = "__BUS_ID__"
-metadatas.domain = "__BUS_ID__.bus.gortransportnch.ru"
+metadatas.domain = "__BUS_ID__.bus.zeltr.devlabacloud.ru"
 
 [[proxies]]
 name = "ssh"
 type = "tcpmux"
 multiplexer = "httpconnect"
-customDomains = ["__BUS_ID__.bus.gortransportnch.ru"]
+customDomains = ["__BUS_ID__.bus.zeltr.devlabacloud.ru"]
 localIP = "127.0.0.1"
 localPort = 22

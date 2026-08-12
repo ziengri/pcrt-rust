@@ -73,6 +73,7 @@ main() {
   require_root
   for command in sed install systemctl hostnamectl systemd-machine-id-setup ssh-keygen; do require_cmd "$command"; done
   require_file "$DEVICE_TEMPLATE"; require_file "$FRPC_TEMPLATE"; require_file "$REVERSE_TEMPLATE"; require_file "$INSTALL_SERVICES_SCRIPT"
+  require_file "$PROJECT_ROOT/RELEASE"
   ask_bus_id; ask_number_cams; confirm_apply
 
   log_info "Regenerating machine and SSH host identities"
@@ -84,6 +85,6 @@ main() {
   render_template "$FRPC_TEMPLATE" "$FRPC_TARGET"
   install_reverse_tunnel
   bash "$INSTALL_SERVICES_SCRIPT"
-  log_info "First boot setup completed for $BUS_ID"
+  log_info "First boot setup completed for $BUS_ID using release bundle $PROJECT_ROOT"
 }
 main "$@"
