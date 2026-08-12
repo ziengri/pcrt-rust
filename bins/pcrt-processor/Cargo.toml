@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["license"]
+license = ["dep:pcrt-license"]
+
 [dependencies]
 chrono = "0.4.42"
 ctrlc = "3.5.2"
@@ -13,7 +17,7 @@ fs2 = "0.4.3"
 opencv = { version = "0.100.1", default-features = false, features = ["imgproc", "videoio"] }
 openvino = { version = "0.11.0", features = ["runtime-linking"] }
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
-pcrt-license = { path = "../../crates/pcrt-license" }
+pcrt-license = { path = "../../crates/pcrt-license", optional = true }
 pcrt-model = { path = "../../crates/pcrt-model" }
 pcrt-processing = { path = "../../crates/pcrt-processing" }
 pcrt-result-queue = { path = "../../crates/pcrt-result-queue" }

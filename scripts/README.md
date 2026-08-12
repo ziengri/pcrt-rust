@@ -8,6 +8,23 @@ From the repository root:
 ./scripts/release/build_linux_bundle.sh
 ```
 
+To build gateway, processor and recorder without license enforcement, run:
+
+```bash
+./scripts/release/build_linux_bundle.sh --without-license
+```
+
+This bundle does not contain `pcrt-license-tool` and cannot validate or import
+licenses. Its `RELEASE` file records `license_enforcement=0`.
+
+For a manual no-license build, retain the recorder source feature explicitly:
+
+```bash
+cargo build --release -p pcrt-door-gateway --no-default-features
+cargo build --release -p pcrt-processor --no-default-features
+cargo build --release -p pcrt-recorder --no-default-features --features opencv-source
+```
+
 The bundle is created at `release/linux/`. Runtime binaries are placed directly
 in that directory, alongside the current service configuration files, `models/`
 and the service/firstboot scripts. Private keys, `license.lic`, `device.env`,

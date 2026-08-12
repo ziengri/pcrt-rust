@@ -1993,6 +1993,7 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "pcrt-api-client",
+ "pcrt-model",
  "pcrt-result-queue",
  "pcrt-service",
  "pcrt-uploader-core",

@@ -30,6 +30,7 @@ struct RecorderServiceConfig {
     door_open_value: u8,
     sessions_dir: PathBuf,
     endpoint: String,
+    #[cfg(feature = "license")]
     bus_id: Option<String>,
     width: u32,
     height: u32,
@@ -48,6 +49,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let config = parse_args(env::args().skip(1))?;
+    #[cfg(feature = "license")]
     log_license_status(config.bus_id.as_deref());
     let shutdown = ShutdownToken::default();
     install_shutdown_handler(shutdown.clone())?;
@@ -130,6 +132,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "license")]
 fn log_license_status(bus_id: Option<&str>) {
     match bus_id {
         Some(bus_id) => match pcrt_license::validate_installed(bus_id) {
@@ -173,6 +176,7 @@ fn parse_args(
     let mut arguments = arguments.into_iter();
     let mut config_path = "config.env".to_owned();
     let mut recorder_path = "recorder-cam.env".to_owned();
+    #[cfg(feature = "license")]
     let mut device_path = "/etc/pcrt/device.env".to_owned();
     let mut overrides = BTreeMap::new();
     let mut exit_after = None;
@@ -180,6 +184,7 @@ fn parse_args(
         match argument.as_str() {
             "--config-env-file" => config_path = argument_value(&argument, &mut arguments)?,
             "--env-file" => recorder_path = argument_value(&argument, &mut arguments)?,
+            #[cfg(feature = "license")]
             "--device-env-file" => device_path = argument_value(&argument, &mut arguments)?,
             "--source" => set_override(
                 &mut overrides,
@@ -223,6 +228,7 @@ fn parse_args(
     let mut values = defaults();
     values.extend(read_env_file(&config_path)?);
     values.extend(read_env_file(&recorder_path)?);
+    #[cfg(feature = "license")]
     let device_values = read_env_file(&device_path)?;
     for key in config_environment_keys() {
         if let Ok(value) = env::var(key) {
@@ -239,6 +245,7 @@ fn parse_args(
         door_open_value: parse_u8(&values, "DOOR_OPEN_VALUE")?,
         sessions_dir: PathBuf::from(required_value(&values, "SESSIONS_DIR")?),
         endpoint: required_value(&values, "ZMQ_IPC_ENDPOINT")?,
+        #[cfg(feature = "license")]
         bus_id: device_values
             .get("BUS_ID")
             .filter(|value| !value.is_empty())

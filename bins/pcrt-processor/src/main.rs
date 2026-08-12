@@ -17,6 +17,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(config: &config::ProcessorConfig) -> std::process::ExitCode {
+    #[cfg(feature = "license")]
     if let Err(error) = pcrt_license::validate_installed(&config.bus_id) {
         eprintln!("pcrt-processor: license denied: {error}");
         return std::process::ExitCode::FAILURE;

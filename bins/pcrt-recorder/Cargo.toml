@@ -7,7 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["opencv-source"]
+default = ["license", "opencv-source"]
+license = ["dep:pcrt-license"]
 opencv-source = ["pcrt-recording/opencv-source"]
 
 [[bin]]
@@ -18,7 +19,7 @@ required-features = ["opencv-source"]
 [dependencies]
 pcrt-recording = { path = "../../crates/pcrt-recording" }
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
-pcrt-license = { path = "../../crates/pcrt-license" }
+pcrt-license = { path = "../../crates/pcrt-license", optional = true }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-storage = { path = "../../crates/pcrt-storage" }
 ctrlc = "3.5.2"

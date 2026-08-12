@@ -12,6 +12,14 @@ require_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "Run as root (or via sud
 require_file() { [[ -f "$1" ]] || die "File not found: $1"; }
 require_executable() { [[ -x "$1" ]] || die "Executable not found: $1"; }
 service_script() { echo "$PROJECT_ROOT/scripts/services/$1"; }
+binary_path() {
+  local name="$1"
+  if [[ -x "$PROJECT_ROOT/$name" ]]; then
+    echo "$PROJECT_ROOT/$name"
+  else
+    echo "$PROJECT_ROOT/target/release/$name"
+  fi
+}
 
 read_env_value() {
   local env_file="$1" key="$2"
@@ -62,6 +70,7 @@ install_recorder_services() {
 }
 
 main() {
+  local gateway_bin recorder_bin processor_bin uploader_bin
   require_root
   require_file "$DEVICE_ENV_FILE"
   # shellcheck disable=SC1090
@@ -76,10 +85,14 @@ main() {
   require_file "$PROJECT_ROOT/updater.env"
   grep -qx 'ZMQ_IPC_ENDPOINT=ipc:///run/pcrt/doors.sock' "$PROJECT_ROOT/config.env" || \
     die "config.env must set ZMQ_IPC_ENDPOINT=ipc:///run/pcrt/doors.sock"
-  require_executable "$PROJECT_ROOT/target/release/pcrt-door-gateway"
-  require_executable "$PROJECT_ROOT/target/release/pcrt-recorder"
-  require_executable "$PROJECT_ROOT/target/release/pcrt-processor"
-  require_executable "$PROJECT_ROOT/target/release/pcrt-uploader"
+  gateway_bin="$(binary_path pcrt-door-gateway)"
+  recorder_bin="$(binary_path pcrt-recorder)"
+  processor_bin="$(binary_path pcrt-processor)"
+  uploader_bin="$(binary_path pcrt-uploader)"
+  require_executable "$gateway_bin"
+  require_executable "$recorder_bin"
+  require_executable "$processor_bin"
+  require_executable "$uploader_bin"
   require_file "$(service_script door_gateway_service.sh)"
   require_file "$(service_script recorder_service.sh)"
   require_file "$(service_script processor_service.sh)"
@@ -95,9 +108,9 @@ main() {
   bash "$(service_script processor_service.sh)" uninstall
   bash "$(service_script door_gateway_service.sh)" uninstall
 
-  bash "$(service_script door_gateway_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/door_gateway.env"
-  bash "$(service_script processor_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/processor.env"
-  bash "$(service_script uploader_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/uploader.env"
+  bash "$(service_script door_gateway_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/door_gateway.env" --binary "$gateway_bin"
+  bash "$(service_script processor_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/processor.env" --binary "$processor_bin"
+  bash "$(service_script uploader_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/uploader.env" --binary "$uploader_bin"
   bash "$(service_script modem_watchdog_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/modem-watchdog.env"
   bash "$(service_script updater_service.sh)" install --project-root "$PROJECT_ROOT" --env "$PROJECT_ROOT/updater.env"
   install_recorder_services

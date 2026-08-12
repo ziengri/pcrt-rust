@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 ctrlc = "3.5.2"
 pcrt-api-client = { path = "../../crates/pcrt-api-client" }
+pcrt-model = { path = "../../crates/pcrt-model" }
 pcrt-result-queue = { path = "../../crates/pcrt-result-queue" }
 pcrt-service = { path = "../../crates/pcrt-service" }
 pcrt-uploader-core = { path = "../../crates/pcrt-uploader" }

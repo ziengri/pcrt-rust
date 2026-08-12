@@ -7,6 +7,7 @@ use std::{
 
 use pcrt_door::{DoorProtocol, DoorSnapshot, encode_snapshot};
 use pcrt_door_zmq::DoorPublisher;
+#[cfg(feature = "license")]
 use pcrt_license::validate_installed;
 use pcrt_service::ShutdownToken;
 
@@ -24,6 +25,7 @@ const READ_BUFFER_SIZE: usize = 4096;
 ///
 /// Returns configuration-independent adapter setup or runtime failures.
 pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
+    #[cfg(feature = "license")]
     validate_license(&config.bus_id)?;
     let protocol = DoorProtocol::new(config.door_count).map_err(|error| error.to_string())?;
     let shutdown = ShutdownToken::default();
@@ -53,6 +55,7 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
             break;
         }
         if source.is_none() && engine.reconnect_due(now) {
+            #[cfg(feature = "license")]
             if let Err(error) = validate_license(&config.bus_id) {
                 log_event("license_denied", &[("reason", &error)]);
                 return Err(error);
@@ -71,6 +74,7 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
             }
         }
         if let Some(reader) = source.as_mut() {
+            #[cfg(feature = "license")]
             if let Err(error) = validate_license(&config.bus_id) {
                 log_event("license_denied", &[("reason", &error)]);
                 source.take();
@@ -112,6 +116,7 @@ pub(crate) fn run(config: &GatewayConfig) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "license")]
 fn validate_license(bus_id: &str) -> Result<(), String> {
     validate_installed(bus_id)
         .map(|_| ())

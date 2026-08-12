@@ -11,6 +11,7 @@ pub(crate) struct GatewayConfig {
     #[cfg(feature = "test-transport")]
     pub(crate) test_source_path: Option<String>,
     pub(crate) endpoint: String,
+    #[cfg(feature = "license")]
     pub(crate) bus_id: String,
     pub(crate) door_count: u8,
     pub(crate) serial_baudrate: u32,
@@ -190,6 +191,7 @@ pub(crate) fn parse_args(
         #[cfg(feature = "test-transport")]
         test_source_path,
         endpoint: required_value(&values, "ZMQ_IPC_ENDPOINT")?,
+        #[cfg(feature = "license")]
         bus_id: required_value(&device_values, "BUS_ID")?,
         door_count: required_value(&values, "DOOR_COUNT")?
             .parse()

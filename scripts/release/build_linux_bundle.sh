@@ -4,6 +4,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 OUTPUT_DIR="${PROJECT_ROOT}/release/linux"
+WITHOUT_LICENSE=false
+LICENSE_ENFORCEMENT=1
 
 die() {
   echo "[ERROR] $*" >&2
@@ -16,6 +18,10 @@ log_info() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+usage() {
+  echo "Usage: build_linux_bundle.sh [--without-license]"
 }
 
 copy_file() {
@@ -31,23 +37,45 @@ copy_binary() {
   cp -f "$source" "$OUTPUT_DIR/${name}"
 }
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --without-license) WITHOUT_LICENSE=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option: $1" ;;
+  esac
+done
+
+if "$WITHOUT_LICENSE"; then
+  LICENSE_ENFORCEMENT=0
+fi
+
 for command in cargo cp date find mkdir rm; do
   require_command "$command"
 done
 
-log_info "Building release workspace"
-cargo build --release --workspace --manifest-path "${PROJECT_ROOT}/Cargo.toml"
+if "$WITHOUT_LICENSE"; then
+  log_info "Building release binaries without license enforcement"
+  cargo build --release --manifest-path "${PROJECT_ROOT}/Cargo.toml" \
+    -p pcrt-door-gateway --no-default-features
+  cargo build --release --manifest-path "${PROJECT_ROOT}/Cargo.toml" \
+    -p pcrt-processor --no-default-features
+  cargo build --release --manifest-path "${PROJECT_ROOT}/Cargo.toml" \
+    -p pcrt-recorder --no-default-features --features opencv-source
+  cargo build --release --manifest-path "${PROJECT_ROOT}/Cargo.toml" -p pcrt-uploader
+else
+  log_info "Building release workspace with license enforcement"
+  cargo build --release --workspace --manifest-path "${PROJECT_ROOT}/Cargo.toml"
+fi
 
 log_info "Preparing ${OUTPUT_DIR}"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-for binary in \
-  pcrt-door-gateway \
-  pcrt-processor \
-  pcrt-recorder \
-  pcrt-uploader \
-  pcrt-license-tool; do
+runtime_binaries=(pcrt-door-gateway pcrt-processor pcrt-recorder pcrt-uploader)
+if ! "$WITHOUT_LICENSE"; then
+  runtime_binaries+=(pcrt-license-tool)
+fi
+for binary in "${runtime_binaries[@]}"; do
   copy_binary "$binary"
 done
 
@@ -82,6 +110,7 @@ fi
 cat >"${OUTPUT_DIR}/RELEASE" <<EOF
 product=pcrt
 platform=linux
+license_enforcement=${LICENSE_ENFORCEMENT}
 commit=${commit}
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF

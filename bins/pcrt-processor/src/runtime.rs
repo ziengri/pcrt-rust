@@ -6,6 +6,7 @@ use std::{
 };
 
 use pcrt_door_zmq::{DoorSubscriber, DoorSubscription};
+#[cfg(feature = "license")]
 use pcrt_license::validate_installed;
 use pcrt_processing::{InferenceBackend, ProcessingStep, Processor, ResultEncoder};
 use pcrt_result_queue::ResultQueue;
@@ -70,6 +71,7 @@ where
                 false
             }
         };
+        #[cfg(feature = "license")]
         if processing_allowed && let Err(error) = validate_installed(&config.bus_id) {
             log_event("license_denied", &[("reason", &error.to_string())]);
             thread::sleep(config.idle_sleep);

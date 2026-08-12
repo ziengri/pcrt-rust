@@ -415,6 +415,63 @@ impl ResultQueue {
             .map_err(QueueError::Sqlite)?;
         ensure_pending(updated, session_id)
     }
+
+    /// Возвращает одну dead-letter строку в очередь для немедленной отправки.
+    ///
+    /// Счётчик попыток и диагностическая ошибка сбрасываются, но исходные
+    /// payload и idempotency key сохраняются.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает ошибку, если строка отсутствует, не находится в dead letter
+    /// или `SQLite` недоступна.
+    pub fn requeue_dead_letter(
+        &self,
+        session_id: &SessionId,
+        now: Timestamp,
+    ) -> Result<(), QueueError> {
+        let updated = self
+            .connection
+            .execute(
+                "
+                UPDATE result_queue
+                SET
+                    state = 'pending',
+                    attempts = 0,
+                    next_attempt_at_ms = ?2,
+                    last_attempt_at_ms = NULL,
+                    last_error = NULL,
+                    dead_letter_at_ms = NULL
+                WHERE session_id = ?1 AND state = 'dead_letter'
+                ",
+                params![session_id.as_str(), now.as_unix_millis()],
+            )
+            .map_err(QueueError::Sqlite)?;
+        if updated == 1 {
+            return Ok(());
+        }
+
+        let state = self
+            .connection
+            .query_row(
+                "SELECT state FROM result_queue WHERE session_id = ?1",
+                [session_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(QueueError::Sqlite)?;
+        match state.as_deref() {
+            Some("prepared" | "pending") => Err(QueueError::MessageIsNotDeadLetter {
+                session_id: session_id.as_str().to_owned(),
+            }),
+            Some(other) => Err(QueueError::InvalidStoredState {
+                value: other.to_owned(),
+            }),
+            None => Err(QueueError::MissingMessage {
+                session_id: session_id.as_str().to_owned(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -457,6 +514,7 @@ pub enum QueueError {
     ConflictingSessionResult { session_id: String },
     MissingMessage { session_id: String },
     MessageIsDeadLetter { session_id: String },
+    MessageIsNotDeadLetter { session_id: String },
     MissingPendingMessage { session_id: String },
     InvalidStoredSessionId { value: String },
     InvalidStoredState { value: String },
@@ -486,6 +544,12 @@ impl core::fmt::Display for QueueError {
                 write!(
                     formatter,
                     "result queue message is dead letter for session {session_id}"
+                )
+            }
+            Self::MessageIsNotDeadLetter { session_id } => {
+                write!(
+                    formatter,
+                    "result queue message is not dead letter for session {session_id}"
                 )
             }
             Self::MissingPendingMessage { session_id } => {
@@ -520,6 +584,7 @@ impl std::error::Error for QueueError {
             | Self::ConflictingSessionResult { .. }
             | Self::MissingMessage { .. }
             | Self::MessageIsDeadLetter { .. }
+            | Self::MessageIsNotDeadLetter { .. }
             | Self::MissingPendingMessage { .. }
             | Self::InvalidStoredSessionId { .. }
             | Self::InvalidStoredState { .. }
@@ -743,6 +808,40 @@ mod tests {
                 "retry",
             ),
             Err(QueueError::MissingPendingMessage { .. })
+        ));
+        drop(queue);
+        remove_test_database(&path);
+    }
+
+    #[test]
+    fn dead_letter_can_be_requeued_without_changing_delivery_identity() {
+        let path = test_database_path();
+        let queue = ResultQueue::open(&path).unwrap();
+        let session = session("session-1");
+        insert_and_publish(&queue, &session);
+        queue
+            .dead_letter(
+                &session,
+                Timestamp::from_unix_millis(1_100),
+                "Bus not found",
+            )
+            .unwrap();
+
+        queue
+            .requeue_dead_letter(&session, Timestamp::from_unix_millis(2_000))
+            .unwrap();
+        let entry = queue
+            .next_due(Timestamp::from_unix_millis(2_000))
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.session_id, session);
+        assert_eq!(entry.idempotency_key, "result:session-1");
+        assert_eq!(entry.payload_json, r"{}");
+        assert_eq!(entry.attempts, 0);
+        assert_eq!(entry.next_attempt_at, Timestamp::from_unix_millis(2_000));
+        assert!(matches!(
+            queue.requeue_dead_letter(&session, Timestamp::from_unix_millis(2_000)),
+            Err(QueueError::MessageIsNotDeadLetter { .. })
         ));
         drop(queue);
         remove_test_database(&path);

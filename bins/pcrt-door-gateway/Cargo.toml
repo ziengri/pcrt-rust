@@ -17,12 +17,14 @@ path = "src/bin/protocol-publisher.rs"
 required-features = ["test-transport"]
 
 [features]
+default = ["license"]
+license = ["dep:pcrt-license"]
 test-transport = []
 
 [dependencies]
 pcrt-door = { path = "../../crates/pcrt-door" }
 pcrt-door-zmq = { path = "../../crates/pcrt-door-zmq" }
-pcrt-license = { path = "../../crates/pcrt-license" }
+pcrt-license = { path = "../../crates/pcrt-license", optional = true }
 pcrt-service = { path = "../../crates/pcrt-service" }
 ctrlc = "3.5.2"
 glob = "0.3.3"
